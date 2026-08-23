@@ -426,6 +426,19 @@ function actFTBiz(p){
   });
 }
 
+function actFTCharity(p){
+  if(p.ft.charity){ alert("Благотворительность уже действует до конца игры."); return; }
+  openForm({
+    title: "Благотворительность",
+    intro: "Не обязательна. Действует до конца игры: на каждом ходу выбираешь, кидать одну, две или три кости.",
+    fields: [{k:"amount", label:"Сумма с карточки, $", value:100000, step:1000}],
+    validate: v => (v.amount <= 0 ? "Укажи сумму" : null),
+    preview: v => deltaPreview(p, -v.amount, 0),
+    submit: v => push({type:"FT_CHARITY", playerId:p.id, amount:v.amount,
+      label:"Благотворительность на дорожке " + money(-v.amount) + " — 1–3 кости до конца игры"})
+  });
+}
+
 function actFTDream(p){
   openForm({
     title: "Покупка мечты",
@@ -567,9 +580,13 @@ function renderTable(){
         (d.canEscape ? "pos" : "") + '">' + money(d.passive) + " / " + money(d.totalExpenses) + "</b></div>");
 
   const badges = [];
-  if(p.charityTurns > 0) badges.push('<button class="badge" data-tick="charity">🎲 Благотворительность: ' + p.charityTurns + " хода — снять</button>");
-  if(p.skipTurns > 0)    badges.push('<button class="badge" data-tick="skip">⏭ Пропуск ходов: ' + p.skipTurns + " — снять</button>");
-  if(p.children > 0)     badges.push('<span class="badge">👶 Детей: ' + p.children + "</span>");
+  if(ft){
+    if(p.ft.charity) badges.push('<span class="badge">🎲 Благотворительность: 1–3 кости до конца игры</span>');
+  } else {
+    if(p.charityTurns > 0) badges.push('<button class="badge" data-tick="charity">🎲 Благотворительность: ' + p.charityTurns + " хода — снять</button>");
+    if(p.skipTurns > 0)    badges.push('<button class="badge" data-tick="skip">⏭ Пропуск ходов: ' + p.skipTurns + " — снять</button>");
+    if(p.children > 0)     badges.push('<span class="badge">👶 Детей: ' + p.children + "</span>");
+  }
   $("#badges").innerHTML = badges.join("");
   $("#badges").querySelectorAll("[data-tick]").forEach(el => el.onclick = () => {
     push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
@@ -579,6 +596,7 @@ function renderTable(){
   const acts = ft ? [
     ["💵","День CASHFLOW", () => actFTPayday(p), true],
     ["🏢","Купить бизнес", () => actFTBiz(p)],
+    ["❤️","Благотворительность", () => actFTCharity(p)],
     ["⭐","Купить мечту", () => actFTDream(p)],
     ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
     ["⚖️","Судебный иск", () => actFTLose(p, "half", "Судебный иск")],

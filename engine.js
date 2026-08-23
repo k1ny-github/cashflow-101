@@ -189,7 +189,7 @@ function apply(state, ev){
     /* Выход на дорожку: всё сдано банкиру, подъёмные выданы сразу. */
     case "ENTER_FT": {
       const start = liftoff(derive(p).passive);
-      p.ft = {startIncome: start, target: start + 50000, businesses: [], dream: null};
+      p.ft = {startIncome: start, target: start + 50000, businesses: [], dream: null, charity: false};
       p.cash = start;
       return;
     }
@@ -202,6 +202,14 @@ function apply(state, ev){
       if(!p.ft) return;
       p.cash -= ev.down;
       p.ft.businesses.push({id: ev.assetId, name: ev.name, down: ev.down, cashflow: ev.cashflow});
+      return;
+
+    /* Благотворительность на дорожке: не обязательна, действует до конца
+       игры — можно выбрасывать одну, две или три кости (стр. 12). */
+    case "FT_CHARITY":
+      if(!p.ft) return;
+      p.cash -= ev.amount;
+      p.ft.charity = true;
       return;
 
     case "FT_DREAM":
