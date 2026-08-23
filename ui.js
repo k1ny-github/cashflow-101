@@ -439,18 +439,63 @@ function actFTCharity(p){
   });
 }
 
-function actFTDream(p){
+function actSetDream(p){
   openForm({
-    title: "Покупка мечты",
+    title: p.dream ? "Сменить мечту" : "Моя мечта",
+    intro: "Мечта выбирается в начале партии — на неё ставится Сыр. Купить её сможешь только ты, и это победа.",
     fields: [
-      {k:"name", type:"text", label:"Мечта"},
-      {k:"price", label:"Цена, $", value:0,
-       hint:"Если на поле стоят чужие жетоны, цена уже удвоена или утроена."}
+      {k:"name", type:"text", label:"Название с розового поля",
+       value: p.dream ? p.dream.name : "", placeholder:"Кругосветное путешествие"},
+      {k:"price", label:"Первоначальная стоимость, $", value: p.dream ? p.dream.base : 0, step:1000}
     ],
-    validate: v => (!v.name.trim() ? "Укажи мечту" : null),
-    preview: v => deltaPreview(p, -v.price, 0),
-    submit: v => push({type:"FT_DREAM", playerId:p.id, name:v.name.trim(), price:v.price,
-      label:"Куплена мечта: " + v.name.trim() + " за " + money(v.price)})
+    validate: v => (!v.name.trim() ? "Укажи мечту" : v.price <= 0 ? "Укажи стоимость" : null),
+    preview: v => (p.dream && p.dream.tokens > 0
+      ? '<div class="row"><span class="k">Жетоны обнулятся</span><span class="v">сейчас их ' + p.dream.tokens + "</span></div>"
+      : '<div class="row"><span class="k">Цена, пока жетонов нет</span><span class="v">' + money(v.price) + "</span></div>"),
+    submit: v => push({type:"SET_DREAM", playerId:p.id, name:v.name.trim(), price:v.price,
+      label:"Мечта: " + v.name.trim() + " за " + money(v.price)})
+  });
+}
+
+function actDreamToken(p){
+  const others = S.players.filter(x => x.id !== p.id && x.dream && !x.dream.bought);
+  if(!others.length){ alert("Не на чью Мечту ставить жетон — у остальных она не задана."); return; }
+  openForm({
+    title: "Жетон на чужую Мечту",
+    intro: "Ты попал на розовое поле чужой Мечты. Платить не надо, но её цена для владельца вырастет на 100 % от первоначальной.",
+    fields: [{k:"who", type:"select", label:"Чья Мечта",
+      options: others.map(x => ({v:x.id, t:x.name + " — " + x.dream.name}))}],
+    preview: v => {
+      const o = others.find(x => x.id === v.who); if(!o) return "";
+      const now = dreamPrice(o), next = o.dream.base * (2 + o.dream.tokens);
+      return '<div class="row"><span class="k">Жетонов станет</span><span class="v">' + (o.dream.tokens + 1) + "</span></div>" +
+        '<div class="row"><span class="k">' + esc(o.name) + " заплатит</span><span class=\"v\">" +
+        money(now) + " → <b>" + money(next) + "</b></span></div>";
+    },
+    submit: v => {
+      const o = others.find(x => x.id === v.who); if(!o) return;
+      push({type:"DREAM_TOKEN", playerId:o.id, byPlayerId:p.id,
+        label:"Жетон от " + p.name + " на Мечту «" + o.dream.name + "» — цена стала " +
+              money(o.dream.base * (2 + o.dream.tokens))});
+    }
+  });
+}
+
+function actFTDream(p){
+  if(!p.dream){ actSetDream(p); return; }
+  if(p.dream.bought){ alert("Мечта уже куплена."); return; }
+  const price = dreamPrice(p);
+  openForm({
+    title: "Купить свою Мечту", ok: "Купить",
+    intro: "Покупка своей Мечты — это победа.",
+    preview: () =>
+      '<div class="row"><span class="k">' + esc(p.dream.name) + "</span><span class=\"v\"></span></div>" +
+      '<div class="row"><span class="k">Первоначальная стоимость</span><span class="v">' + money(p.dream.base) + "</span></div>" +
+      '<div class="row"><span class="k">Чужих жетонов</span><span class="v">' + p.dream.tokens + "</span></div>" +
+      '<div class="row total"><span class="k">К оплате</span><span class="v">' + money(price) + "</span></div>" +
+      deltaPreview(p, -price, 0),
+    submit: () => push({type:"FT_DREAM", playerId:p.id,
+      label:"Куплена своя Мечта «" + p.dream.name + "» за " + money(price) + " — победа"})
   });
 }
 
@@ -555,7 +600,12 @@ function reportFT(p){
   h += '<div class="sub">Победа</div>';
   h += row("Цель", money(f.target));
   h += row("Осталось набрать", money(f.left));
-  if(p.ft.dream) h += row("Мечта", esc(p.ft.dream.name) + " — " + money(p.ft.dream.price));
+  if(p.dream){
+    h += '<div class="sub">Мечта</div>';
+    h += row(esc(p.dream.name), p.dream.bought ? "куплена" : money(dreamPrice(p)));
+    h += row("Первоначальная стоимость", money(p.dream.base));
+    h += row("Чужих жетонов", String(p.dream.tokens));
+  }
   return h;
 }
 
@@ -587,6 +637,11 @@ function renderTable(){
     if(p.skipTurns > 0)    badges.push('<button class="badge" data-tick="skip">⏭ Пропуск ходов: ' + p.skipTurns + " — снять</button>");
     if(p.children > 0)     badges.push('<span class="badge">👶 Детей: ' + p.children + "</span>");
   }
+  if(p.dream){
+    badges.push('<span class="badge">⭐ ' + esc(p.dream.name) + ": " + money(dreamPrice(p)) +
+      (p.dream.tokens ? " · жетонов " + p.dream.tokens : "") +
+      (p.dream.bought ? " · куплена" : "") + "</span>");
+  }
   $("#badges").innerHTML = badges.join("");
   $("#badges").querySelectorAll("[data-tick]").forEach(el => el.onclick = () => {
     push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
@@ -597,7 +652,9 @@ function renderTable(){
     ["💵","День CASHFLOW", () => actFTPayday(p), true],
     ["🏢","Купить бизнес", () => actFTBiz(p)],
     ["❤️","Благотворительность", () => actFTCharity(p)],
-    ["⭐","Купить мечту", () => actFTDream(p)],
+    ["⭐","Купить свою Мечту", () => actFTDream(p)],
+    ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
+    ["✏️","Моя мечта", () => actSetDream(p)],
     ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
     ["⚖️","Судебный иск", () => actFTLose(p, "half", "Судебный иск")],
     ["💔","Развод", () => actFTLose(p, "all", "Развод")],
@@ -617,7 +674,8 @@ function renderTable(){
     ["🏦","Взять кредит", () => actLoan(p)],
     ["✅","Погасить долг", () => actRepay(p)],
     ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Разовый расход", () => actCash(p, "out")]
+    ["➖","Разовый расход", () => actCash(p, "out")],
+    ["✏️","Моя мечта", () => actSetDream(p)]
   ];
   if(!ft && d.canEscape) acts.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
 

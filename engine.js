@@ -27,7 +27,8 @@ function blankPlayer(id, name, prof){
     props:  [],   // {id, name, kind, down, price, mortgage, cashflow}
     charityTurns: 0,
     skipTurns: 0,
-    ft: null      // {startIncome, target, businesses, dream}
+    dream: null,  // {name, base, tokens, bought} — выбирается в начале партии
+    ft: null      // {startIncome, target, businesses, charity}
   };
 }
 
@@ -56,12 +57,23 @@ function derive(p){
 function deriveFT(p){
   const biz = p.ft.businesses.reduce((s,b) => s + b.cashflow, 0);
   const income = p.ft.startIncome + biz;
+  const bought = !!(p.dream && p.dream.bought);
   return {
     biz, income,
     target: p.ft.target,
     left: Math.max(0, p.ft.target - income),
-    won: income >= p.ft.target || !!p.ft.dream
+    dreamBought: bought,
+    /* Побеждает только тот, кто купил СВОЮ Мечту, либо первым набрал
+       нужный пассивный доход (правила, стр. 1). */
+    won: income >= p.ft.target || bought
   };
+}
+
+/* Цена своей Мечты растёт на 100 % от первоначальной стоимости за каждый
+   чужой жетон, поставленный на её поле (правила, стр. 12). */
+function dreamPrice(p){
+  if(!p.dream) return 0;
+  return p.dream.base * (1 + p.dream.tokens);
 }
 
 /* Стартовые наличные: месячный денежный поток плюс сбережения (правила, стр. 2). */
@@ -189,7 +201,7 @@ function apply(state, ev){
     /* Выход на дорожку: всё сдано банкиру, подъёмные выданы сразу. */
     case "ENTER_FT": {
       const start = liftoff(derive(p).passive);
-      p.ft = {startIncome: start, target: start + 50000, businesses: [], dream: null, charity: false};
+      p.ft = {startIncome: start, target: start + 50000, businesses: [], charity: false};
       p.cash = start;
       return;
     }
@@ -212,10 +224,26 @@ function apply(state, ev){
       p.ft.charity = true;
       return;
 
+    /* Мечта выбирается в начале партии, ещё до крысиных бегов (стр. 2). */
+    case "SET_DREAM":
+      p.dream = {name: ev.name, base: ev.price, tokens: 0, bought: false};
+      return;
+
+    /* Чужой игрок попал на поле Мечты и поставил жетон: он ничего не платит,
+       но цена Мечты для владельца растёт (стр. 12). */
+    case "DREAM_TOKEN":
+      if(!p.dream) return;
+      p.dream.tokens += 1;
+      return;
+
+    /* Покупка СВОЕЙ Мечты — это победа. */
     case "FT_DREAM":
       if(!p.ft) return;
-      p.cash -= ev.price;
-      p.ft.dream = {name: ev.name, price: ev.price};
+      if(!p.dream){   // журнал, записанный прежней версией приложения
+        p.dream = {name: ev.name || "Мечта", base: ev.price || 0, tokens: 0, bought: false};
+      }
+      p.cash -= dreamPrice(p);
+      p.dream.bought = true;
       return;
 
     case "FT_LOSE":
@@ -238,7 +266,9 @@ function warnings(p){
   if(p.ft){
     const f = deriveFT(p);
     if(f.won) out.push({level:"good", text:
-      p.ft.dream ? "Мечта куплена — победа!" : "Цель по пассивному доходу достигнута — победа!"});
+      f.dreamBought ? "Своя Мечта куплена — победа!" : "Цель по пассивному доходу достигнута — победа!"});
+    if(!p.dream) out.push({level:"warn", text:
+      "Мечта не выбрана. Задай её кнопкой «Моя мечта» — иначе победу по Мечте не отследить."});
     if(p.cash < 0) out.push({level:"bad", text:"Наличные ушли в минус."});
     return out;
   }
