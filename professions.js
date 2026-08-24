@@ -1,9 +1,8 @@
 "use strict";
 
-/* Карточки профессий CASHFLOW 101.
-   Врач сверен с карточкой из книги правил: доход 13 200, расход 9 650, поток 3 550.
-   Остальные перенесены из прототипа cashflow_bankir и требуют сверки с карточками.
-   Медсестры пока нет — карточка не найдена. */
+/* Карточки профессий CASHFLOW 101. Все двенадцать.
+   Врач и Медсестра сверены с фотографиями карточек.
+   Остальные перенесены из прототипа cashflow_bankir и требуют сверки. */
 
 const PROFESSIONS = [
   {id:"doctor", title:"Врач", salary:13200, savings:400, perChild:640,
@@ -29,6 +28,10 @@ const PROFESSIONS = [
   {id:"teacher", title:"Учитель", salary:3300, savings:400, perChild:180,
    expenses:{taxes:630, mortgage:500, school:60, car:100, card:90, retail:50, other:760},
    liabilities:{mortgage:50000, school:12000, car:5000, card:3000, retail:1000}},
+
+  {id:"nurse", title:"Медсестра", salary:3100, savings:480, perChild:170,
+   expenses:{taxes:600, mortgage:400, school:30, car:100, card:90, retail:50, other:710},
+   liabilities:{mortgage:47000, school:6000, car:5000, card:3000, retail:1000}},
 
   {id:"police", title:"Офицер полиции", salary:3000, savings:520, perChild:160,
    expenses:{taxes:580, mortgage:400, school:0, car:100, card:60, retail:50, other:690},
