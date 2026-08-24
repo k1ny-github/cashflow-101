@@ -6,6 +6,11 @@
 
 const KEY = "cashflow-bankir-v1";
 
+/* Версия приложения. При каждом обновлении сайта поднимай её здесь И в номерах
+   ?v= у трёх тегов script в index.html — иначе браузер до десяти минут будет
+   показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
+const APP_VERSION = "4 — 24 августа 2026";
+
 let G = { events: [], current: null, screen: "setup" };
 let S = { players: [] };            // производное состояние
 
@@ -717,13 +722,21 @@ function render(){
 function menu(){
   openForm({
     title: "Партия",
+    intro: "Версия " + esc(APP_VERSION),
     fields: [{k:"a", type:"select", label:"Что сделать", options:[
       {v:"export", t:"Выгрузить игру в файл"},
       {v:"import", t:"Загрузить игру из файла"},
+      {v:"update", t:"Обновить приложение — забрать свежую версию"},
       {v:"reset",  t:"Начать новую партию"}
     ]}],
     ok: "Выполнить",
     submit: v => {
+      if(v.a === "update"){
+        // Обходим кэш: новый адрес заставляет браузер сходить на сервер.
+        // Партия хранится отдельно и не теряется.
+        location.href = location.pathname + "?obn=" + Date.now();
+        return;
+      }
       if(v.a === "export"){
         const blob = new Blob([JSON.stringify({events:G.events}, null, 2)], {type:"application/json"});
         const a = document.createElement("a");
