@@ -50,7 +50,17 @@ function loadUI(){
     "globalThis.marketUI = {" +
       "actBuyOption:typeof actBuyOption === 'function' ? actBuyOption : null," +
       "actCloseShort:typeof actCloseShort === 'function' ? actCloseShort : null," +
-      "setGame(game){ G = game; }" +
+      "setGame(game){ G = game; }," +
+      "setState(state){ S = state; }," +
+      "recompute:typeof recompute === 'function' ? recompute : null," +
+      "getGame(){ return G; }," +
+      "getState(){ return S; }," +
+      "renderTools(player){ return typeof render202Tools === 'function' ? render202Tools(player) : null; }," +
+      "actionsFor(player){" +
+        "if(typeof tableActions !== 'function') return null;" +
+        "const ft = !!player.ft;" +
+        "return tableActions(player, ft, ft ? deriveFT(player) : derive(player));" +
+      "}" +
     "};",
     context
   );
@@ -114,11 +124,21 @@ test("legacy BUY_OPTION premium remains an already-total premium", () => {
   const p = game([
     addPlayer("p"),
     {type:"BUY_OPTION", playerId:"p", optionId:"legacy", typeOpt:"call",
-      symbol:"OK4U", qty:200, strike:20, premium:75, remaining:3}
+      symbol:"ALT", qty:75, strike:20, premium:75, remaining:3}
   ]).players[0];
 
   assert.equal(p.cash, 1525);
   assert.equal(p.options[0].premiumTotal, 75);
+});
+
+test("new BUY_OPTION derives and deducts premiumTotal instead of trusting the event copy", () => {
+  const p = game([
+    addPlayer("p"),
+    buyOption("p", "o", {qty:200, premiumPerShare:2, premiumTotal:1})
+  ]).players[0];
+
+  assert.equal(p.options[0].premiumTotal, 400);
+  assert.equal(p.cash, 1200);
 });
 
 test("standard lots are restricted to 100–5000 in steps of 100", () => {
@@ -133,12 +153,14 @@ test("standard lots are restricted to 100–5000 in steps of 100", () => {
 });
 
 test("standard options start at three rounds and Custom uses its configured duration", () => {
-  const standard = game([addPlayer("s"), buyOption("s", "o")]).players[0].options[0];
-  const custom = game([addPlayer("c"), buyOption("c", "o")], "202-custom", {optionRounds:7})
+  const standard = game([addPlayer("s"), buyOption("s", "o", {remaining:99})]).players[0].options[0];
+  const custom = game([addPlayer("c"), buyOption("c", "o", {remaining:1})], "202-custom", {optionRounds:7})
     .players[0].options[0];
 
   assert.equal(standard.remaining, 3);
+  assert.equal(standard.roundLimit, 3);
   assert.equal(custom.remaining, 7);
+  assert.equal(custom.roundLimit, 7);
 });
 
 test("ADJUST_OPTION_ROUNDS changes only its option and +1 repairs a manual decrement", () => {
@@ -157,8 +179,8 @@ test("final per-option decrement makes it inactive and deleting that event resto
     {type:"ADJUST_OPTION_ROUNDS", playerId:"p", optionId:"a", delta:-1}
   ];
 
-  const expired = game(events).players[0].options[0];
-  const restored = game(events.slice(0, -1)).players[0].options[0];
+  const expired = game(events, "202-custom", {optionRounds:1}).players[0].options[0];
+  const restored = game(events.slice(0, -1), "202-custom", {optionRounds:1}).players[0].options[0];
   assert.equal(expired.remaining, 0);
   assert.equal(expired.active, false);
   assert.equal(restored.remaining, 1);
@@ -170,17 +192,44 @@ test("+1 can repair an accidental final per-option decrement", () => {
     addPlayer("p"), buyOption("p", "a", {remaining:1}),
     {type:"ADJUST_OPTION_ROUNDS", playerId:"p", optionId:"a", delta:-1},
     {type:"ADJUST_OPTION_ROUNDS", playerId:"p", optionId:"a", delta:1}
-  ]).players[0];
+  ], "202-custom", {optionRounds:1}).players[0];
 
   assert.equal(p.options[0].remaining, 1);
   assert.equal(p.options[0].active, true);
 });
 
+test("+1 cannot extend Standard or Custom options beyond their original configured duration", () => {
+  const standard = game([
+    addPlayer("s"), buyOption("s", "o"),
+    {type:"ADJUST_OPTION_ROUNDS", playerId:"s", optionId:"o", delta:1}
+  ]).players[0].options[0];
+  const custom = game([
+    addPlayer("c"), buyOption("c", "o"),
+    {type:"ADJUST_OPTION_ROUNDS", playerId:"c", optionId:"o", delta:1}
+  ], "202-custom", {optionRounds:7}).players[0].options[0];
+
+  assert.equal(standard.remaining, 3);
+  assert.equal(custom.remaining, 7);
+});
+
+test("option card disables +1 at the configured duration cap", () => {
+  const ui = loadUI();
+  const state = game([addPlayer("p"), buyOption("p", "o")]);
+  ui.marketUI.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  ui.marketUI.setState(state);
+
+  const html = ui.marketUI.renderTools(state.players[0]);
+
+  assert.match(html, /data-option-plus="o" disabled/);
+});
+
 test("legacy OPTION_ROUND still decrements every open option", () => {
   const p = game([
     addPlayer("p"),
-    buyOption("p", "a", {remaining:3}),
-    buyOption("p", "b", {remaining:1}),
+    {type:"BUY_OPTION", playerId:"p", optionId:"a", typeOpt:"call", symbol:"OK4U",
+      qty:200, strike:20, premium:0, remaining:3},
+    {type:"BUY_OPTION", playerId:"p", optionId:"b", typeOpt:"put", symbol:"OK4U",
+      qty:200, strike:20, premium:0, remaining:1},
     {type:"OPTION_ROUND"}
   ]).players[0];
 
@@ -228,6 +277,7 @@ test("closing a mandatory short realizes its locked result", () => {
   ]).players[0];
   const loss = game([
     addPlayer("p"),
+    {type:"CASH_IN", playerId:"p", amount:1000},
     {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
     {type:"MARKET_PRICE", symbol:"OK4U", price:40},
     {type:"CLOSE_SHORT", playerId:"p", shortId:"sh", marketPrice:40}
@@ -235,7 +285,143 @@ test("closing a mandatory short realizes its locked result", () => {
 
   assert.equal(profit.cash, 3600);
   assert.equal(profit.shorts.length, 0);
-  assert.equal(loss.cash, -400);
+  assert.equal(loss.cash, 600);
+});
+
+test("locked short ignores company bankruptcy until the locking price event is removed", () => {
+  const events = [
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40},
+    {type:"COMPANY_BANKRUPTCY", symbol:"OK4U"}
+  ];
+
+  const locked = game(events);
+  const replayWithoutLock = game(events.filter(event => event.type !== "MARKET_PRICE"));
+
+  assert.equal(locked.marketPrices.OK4U, 40);
+  assert.equal(locked.players[0].cash, 1600);
+  assert.equal(locked.players[0].shorts[0].closePrice, 40);
+  assert.equal(replayWithoutLock.marketPrices.OK4U, 0);
+  assert.equal(replayWithoutLock.players[0].cash, 7600);
+  assert.equal(replayWithoutLock.players[0].shorts.length, 0);
+});
+
+test("locked short ignores later market prices and splits without rewriting its terms", () => {
+  const state = game([
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:10},
+    {type:"MARKET_SPLIT", symbol:"OK4U", ratio:2}
+  ]);
+  const position = state.players[0].shorts[0];
+
+  assert.equal(state.marketPrices.OK4U, 40);
+  assert.deepEqual([position.qty, position.openPrice, position.closePrice], [200, 30, 40]);
+});
+
+test("locked short blocks ordinary actions and bank credit but permits asset sale then close", () => {
+  const p = game([
+    addPlayer("p"),
+    {type:"BUY_STOCK", playerId:"p", assetId:"stock", symbol:"MYT4U", qty:100, price:1, div:0},
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40},
+    {type:"TAKE_LOAN", playerId:"p", amount:1000},
+    {type:"PAYDAY", playerId:"p"},
+    {type:"CASH_IN", playerId:"p", amount:5000},
+    {type:"SELL_STOCK", playerId:"p", assetId:"stock", qty:100, price:10},
+    {type:"CLOSE_SHORT", playerId:"p", shortId:"sh", marketPrice:0}
+  ]).players[0];
+
+  assert.equal(p.bankLoan, 0);
+  assert.equal(p.cash, 500); // $1600 − $100 stock + $1000 sale − $2000 locked short loss
+  assert.equal(p.stocks.length, 0);
+  assert.equal(p.shorts.length, 0);
+});
+
+test("underfunded locked short cannot close into negative free cash", () => {
+  const p = game([
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40},
+    {type:"CLOSE_SHORT", playerId:"p", shortId:"sh", marketPrice:0}
+  ]).players[0];
+
+  assert.equal(p.cash, 1600);
+  assert.equal(p.shorts[0].closePrice, 40);
+});
+
+test("asset sales stay blocked when a locked short does not need loss coverage", () => {
+  const p = game([
+    addPlayer("p"),
+    {type:"BUY_STOCK", playerId:"p", assetId:"stock", symbol:"MYT4U", qty:100, price:1, div:0},
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:20},
+    {type:"SELL_STOCK", playerId:"p", assetId:"stock", qty:100, price:10},
+    {type:"CLOSE_SHORT", playerId:"p", shortId:"sh", marketPrice:0}
+  ]).players[0];
+
+  assert.equal(p.cash, 3500); // $1600 − $100 stock + $2000 short profit
+  assert.equal(p.stocks[0].qty, 100);
+  assert.equal(p.shorts.length, 0);
+});
+
+test("short-loss personal bankruptcy resolves every locked short without bank credit", () => {
+  const p = game([
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40},
+    {type:"DECLARE_202_BANKRUPTCY", playerId:"p", reason:"short-loss"}
+  ]).players[0];
+
+  assert.equal(p.cash, 0);
+  assert.equal(p.bankLoan, 0);
+  assert.equal(p.skipTurns, 3);
+  assert.equal(p.shorts.length, 0);
+});
+
+test("UI moves to the affected player and exposes only short-resolution actions", () => {
+  const ui = loadUI();
+  ui.marketUI.setGame({
+    mode:"202-standard", settings:{optionRounds:3, strictLots:true}, current:"p1", screen:"table",
+    events:[
+      addPlayer("p1"), addPlayer("p2"),
+      {type:"BUY_STOCK", playerId:"p2", assetId:"stock", symbol:"MYT4U", qty:100, price:1, div:0},
+      {type:"OPEN_SHORT", playerId:"p2", shortId:"sh", symbol:"OK4U", qty:200, openPrice:30},
+      {type:"MARKET_PRICE", playerId:"p1", symbol:"OK4U", price:40}
+    ]
+  });
+
+  ui.marketUI.recompute();
+  const state = ui.marketUI.getState();
+  const affected = state.players.find(player => player.id === "p2");
+  const labels = ui.marketUI.actionsFor(affected).map(action => action[1]);
+
+  assert.equal(ui.marketUI.getGame().current, "p2");
+  assert.deepEqual(Array.from(labels), ["Закрыть шорт OK4U", "Продать актив", "Личное банкротство"]);
+  assert.equal(labels.includes("Взять кредит"), false);
+  assert.equal(labels.includes("Рынок 202"), false);
+});
+
+test("UI disables unrelated option and unlocked-short controls during mandatory close", () => {
+  const ui = loadUI();
+  const state = game([
+    addPlayer("p"),
+    buyOption("p", "option"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"locked", symbol:"OK4U", qty:200, openPrice:30},
+    {type:"OPEN_SHORT", playerId:"p", shortId:"other", symbol:"MYT4U", qty:200, openPrice:30},
+    {type:"MARKET_PRICE", symbol:"OK4U", price:40}
+  ]);
+  ui.marketUI.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  ui.marketUI.setState(state);
+
+  const html = ui.marketUI.renderTools(state.players[0]);
+
+  assert.match(html, /data-option-minus="option" disabled/);
+  assert.match(html, /data-option-exercise="option" disabled/);
+  assert.match(html, /data-short-close="other" disabled/);
+  assert.doesNotMatch(html, /data-short-close="locked" disabled/);
 });
 
 test("market effects expose stock, active options and shorts for all players", () => {
@@ -257,11 +443,38 @@ test("market effects expose stock, active options and shorts for all players", (
   assert.deepEqual(Array.from(effects.affectedPlayers, player => player.playerId), ["p1", "p2"]);
 });
 
+test("Custom reducer requires explicit confirmation for every new nonstandard lot", () => {
+  const rejectedOption = game([
+    addPlayer("p"), buyOption("p", "o", {qty:250, premiumTotal:500})
+  ], "202-custom").players[0];
+  const acceptedOption = game([
+    addPlayer("p"), buyOption("p", "o", {qty:250, premiumTotal:500,
+      nonstandardLotConfirmed:true})
+  ], "202-custom").players[0];
+  const rejectedShort = game([
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"ALT", qty:250, openPrice:30,
+      nonstandardLotConfirmed:"true"}
+  ], "202-custom").players[0];
+  const acceptedShort = game([
+    addPlayer("p"),
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"ALT", qty:250, openPrice:30,
+      nonstandardLotConfirmed:true}
+  ], "202-custom").players[0];
+
+  assert.equal(rejectedOption.options.length, 0);
+  assert.equal(rejectedOption.cash, 1600);
+  assert.equal(acceptedOption.options.length, 1);
+  assert.equal(rejectedShort.shorts.length, 0);
+  assert.equal(acceptedShort.shorts.length, 1);
+});
+
 test("global split adjusts stocks, options and shorts across every player", () => {
   const state = game([
     addPlayer("p1"), addPlayer("p2"),
     {type:"BUY_STOCK", playerId:"p1", assetId:"stock", symbol:"OK4U", qty:101, price:10, div:0},
-    buyOption("p2", "option", {qty:201, strike:20, premiumPerShare:2, premiumTotal:402}),
+    buyOption("p2", "option", {qty:201, strike:20, premiumPerShare:2, premiumTotal:402,
+      nonstandardLotConfirmed:true}),
     {type:"OPEN_SHORT", playerId:"p2", shortId:"short", symbol:"OK4U", qty:301, openPrice:30,
       nonstandardLotConfirmed:true},
     {type:"MARKET_SPLIT", symbol:"OK4U", ratio:2}

@@ -227,11 +227,17 @@ function prepareImportedGame(raw){
 
 function recompute(){
   S = reduceEvents(G.events, G);
-  if(!S.players.some(p => p.id === G.current)) G.current = S.players.length ? S.players[0].id : null;
+  const mandatoryOwner = S.players.find(p => lockedShorts(p).length);
+  if(mandatoryOwner) G.current = mandatoryOwner.id;
+  else if(!S.players.some(p => p.id === G.current)) G.current = S.players.length ? S.players[0].id : null;
   G.screen = S.players.length ? (G.screen === "setup" ? "table" : G.screen) : "setup";
 }
 
 function push(ev){
+  if(!eventAllowedDuringShortClose(S, ev)){
+    alert("Сначала закрой обязательную короткую позицию по зафиксированной цене.");
+    return;
+  }
   ev.id = uid();
   G.events.push(ev);
   save(); recompute(); render();
@@ -719,6 +725,16 @@ function actCloseShort(p, position){
   });
 }
 
+function actShortBankruptcy(p){
+  const result = lockedShorts(p).reduce((sum, position) =>
+    sum + shortResult(position, position.closePrice), 0);
+  if(!needsShortLossCover(p)) return;
+  if(!confirm("Объявить личное банкротство из-за убытка по короткой позиции " +
+    signed(result) + "? Непокрытый остаток будет списан, игрок пропустит три хода.")) return;
+  push({type:"DECLARE_202_BANKRUPTCY", playerId:p.id, reason:"short-loss",
+    label:"Личное банкротство из-за убытка по короткой позиции"});
+}
+
 function pendingShortFor(symbol){
   return S.players.some(owner => owner.shorts.some(position => position.symbol === symbol && position.mustClose));
 }
@@ -1060,6 +1076,7 @@ function reportFT(p){
 
 function render202Tools(p){
   if(!is202(G)) return "";
+  const forcedShortClose = S.players.some(owner => lockedShorts(owner).length);
   let html = '<div class="sub tools202-title">Инструменты 202</div>';
   if(!p.options.length && !p.shorts.length){
     return html + '<div class="empty tools202-empty">Открытых биржевых опционов и коротких позиций нет.</div>';
@@ -1076,10 +1093,11 @@ function render202Tools(p){
       (Number.isFinite(price) ? '<div class="row"><span class="k">Рынок · выплата</span><span class="v ' + cls(payout) + '">' +
         money(price) + " · " + money(payout) + "</span></div>" : "") +
       '<div class="instrument-actions"><button class="btn" data-option-minus="' + esc(option.id) + '"' +
-      (option.remaining <= 0 ? " disabled" : "") + ">−1</button>" +
-      '<button class="btn" data-option-plus="' + esc(option.id) + '">+1</button>' +
+      (forcedShortClose || option.remaining <= 0 ? " disabled" : "") + ">−1</button>" +
+      '<button class="btn" data-option-plus="' + esc(option.id) + '"' +
+      (forcedShortClose || option.remaining >= option.roundLimit ? " disabled" : "") + ">+1</button>" +
       (Number.isFinite(price) ? '<button class="btn primary" data-option-exercise="' + esc(option.id) + '"' +
-        (payout <= 0 || option.remaining <= 0 ? " disabled" : "") + ">" +
+        (forcedShortClose || payout <= 0 || option.remaining <= 0 ? " disabled" : "") + ">" +
         (option.remaining <= 0 ? "Истёк" : payout > 0 ? "Исполнить " + signed(payout) : "Ждать") + "</button>" : "") +
       "</div></div>";
   });
@@ -1093,7 +1111,8 @@ function render202Tools(p){
       (position.mustClose ? '<div class="row"><span class="k">Обязательный выкуп · результат</span><span class="v ' + cls(result) + '">' +
         money(position.closePrice) + " · " + signed(result) + "</span></div>" : "") +
       '<div class="instrument-actions"><button class="btn ' + (position.mustClose ? "danger" : "") +
-      '" data-short-close="' + esc(position.id) + '">' + (position.mustClose ? "Подтвердить закрытие" : "Закрыть") + "</button></div></div>";
+      '" data-short-close="' + esc(position.id) + '"' + (forcedShortClose && !position.mustClose ? " disabled" : "") + ">" +
+      (position.mustClose ? "Подтвердить закрытие" : "Закрыть") + "</button></div></div>";
   });
   return html;
 }
@@ -1115,6 +1134,62 @@ function bind202Tools(p){
     const position = p.shorts.find(item => item.id === button.dataset.shortClose);
     if(position) actCloseShort(p, position);
   });
+}
+
+function tableActions(p, ft, d){
+  const mandatoryOwners = S.players.filter(owner => lockedShorts(owner).length);
+  if(mandatoryOwners.length){
+    const positions = lockedShorts(p);
+    if(!positions.length) return [];
+    const actions = positions.map(position =>
+      ["📉", "Закрыть шорт " + position.symbol, () => actCloseShort(p, position), true]);
+    if(needsShortLossCover(p)){
+      if(p.stocks.length || p.props.length){
+        actions.push(["💰", "Продать актив", () => actSell(p)]);
+      }
+      actions.push(["⚠️", "Личное банкротство", () => actShortBankruptcy(p)]);
+    }
+    return actions;
+  }
+
+  const actions = ft ? [
+    ["💵","День CASHFLOW", () => actFTPayday(p), true],
+    ["🏢","Купить бизнес", () => actFTBiz(p)],
+    ["❤️","Благотворительность", () => actFTCharity(p)],
+    ["⭐","Купить свою Мечту", () => actFTDream(p)],
+    ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
+    ["✏️","Моя мечта", () => actSetDream(p)],
+    ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
+    ["⚖️","Судебный иск", () => actFTLose(p, "half", "Судебный иск")],
+    ["💔","Развод", () => actFTLose(p, "all", "Развод")],
+    ["➕","Разовый доход", () => actCash(p, "in")],
+    ["➖","Разовый расход", () => actCash(p, "out")]
+  ] : [
+    ["💵","Получка", () => actPayday(p), true],
+    ["📈","Акции и фонды", () => actBuyStock(p)],
+    ["🏠","Недвижимость", () => actBuyProp(p, "property")],
+    ["🏢","Бизнес", () => actBuyProp(p, "business")],
+    ["💰","Продать актив", () => actSell(p)],
+    ["🔀","Дробление акций", () => actSplit(p)],
+    ["🛍","Всякая всячина", () => actDoodad(p)],
+    ["❤️","Благотворительность", () => actCharity(p)],
+    ["👶","Ребёнок", () => actChild(p)],
+    ["📉","Увольнение", () => actDownsized(p)],
+    ["🏦","Взять кредит", () => actLoan(p)],
+    ["✅","Погасить долг", () => actRepay(p)],
+    ["➕","Разовый доход", () => actCash(p, "in")],
+    ["➖","Разовый расход", () => actCash(p, "out")],
+    ["✏️","Моя мечта", () => actSetDream(p)]
+  ];
+  if(is202(G)){
+    if(!ft){
+      actions.push(["🎯","Купить опцион", () => actBuyOption(p)]);
+      actions.push(["📉","Открыть шорт", () => actOpenShort(p)]);
+    }
+    actions.push(["🌐","Рынок 202", () => actMarket202(p)]);
+  }
+  if(!ft && d.canEscape) actions.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
+  return actions;
 }
 
 function renderTable(){
@@ -1151,48 +1226,16 @@ function renderTable(){
       (p.dream.bought ? " · куплена" : "") + "</span>");
   }
   $("#badges").innerHTML = badges.join("");
-  $("#badges").querySelectorAll("[data-tick]").forEach(el => el.onclick = () => {
-    push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
-      label: el.dataset.tick === "charity" ? "Ход с благотворительностью" : "Пропущен ход"});
+  const forcedShortClose = S.players.some(owner => lockedShorts(owner).length);
+  $("#badges").querySelectorAll("[data-tick]").forEach(el => {
+    el.disabled = forcedShortClose;
+    if(!forcedShortClose){
+      el.onclick = () => push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
+        label: el.dataset.tick === "charity" ? "Ход с благотворительностью" : "Пропущен ход"});
+    }
   });
 
-  const acts = ft ? [
-    ["💵","День CASHFLOW", () => actFTPayday(p), true],
-    ["🏢","Купить бизнес", () => actFTBiz(p)],
-    ["❤️","Благотворительность", () => actFTCharity(p)],
-    ["⭐","Купить свою Мечту", () => actFTDream(p)],
-    ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
-    ["✏️","Моя мечта", () => actSetDream(p)],
-    ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
-    ["⚖️","Судебный иск", () => actFTLose(p, "half", "Судебный иск")],
-    ["💔","Развод", () => actFTLose(p, "all", "Развод")],
-    ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Разовый расход", () => actCash(p, "out")]
-  ] : [
-    ["💵","Получка", () => actPayday(p), true],
-    ["📈","Акции и фонды", () => actBuyStock(p)],
-    ["🏠","Недвижимость", () => actBuyProp(p, "property")],
-    ["🏢","Бизнес", () => actBuyProp(p, "business")],
-    ["💰","Продать актив", () => actSell(p)],
-    ["🔀","Дробление акций", () => actSplit(p)],
-    ["🛍","Всякая всячина", () => actDoodad(p)],
-    ["❤️","Благотворительность", () => actCharity(p)],
-    ["👶","Ребёнок", () => actChild(p)],
-    ["📉","Увольнение", () => actDownsized(p)],
-    ["🏦","Взять кредит", () => actLoan(p)],
-    ["✅","Погасить долг", () => actRepay(p)],
-    ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Разовый расход", () => actCash(p, "out")],
-    ["✏️","Моя мечта", () => actSetDream(p)]
-  ];
-  if(is202(G)){
-    if(!ft){
-      acts.push(["🎯","Купить опцион", () => actBuyOption(p)]);
-      acts.push(["📉","Открыть шорт", () => actOpenShort(p)]);
-    }
-    acts.push(["🌐","Рынок 202", () => actMarket202(p)]);
-  }
-  if(!ft && d.canEscape) acts.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
+  const acts = tableActions(p, ft, d);
 
   $("#acts").innerHTML = acts.map((a, i) =>
     '<button class="act' + (a[3] ? " go" : "") + '" data-a="' + i + '"><i>' + a[0] + "</i>" + a[1] + "</button>").join("");

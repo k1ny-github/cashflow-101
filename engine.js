@@ -139,15 +139,17 @@ function liftoff(passive){ return Math.round(passive / 1000) * 1000 * 100; }
 
 /* ---------- применение одного события ---------- */
 
-function configuredOptionRounds(config, ev){
+function configuredOptionRounds(config, ev, legacy){
   const recorded = Number(ev.remaining);
-  if(Number.isInteger(recorded) && recorded >= 1) return recorded;
+  if(legacy && Number.isInteger(recorded) && recorded >= 1) return recorded;
   return typeof optionRoundLimit === "function" ? optionRoundLimit(config) : 3;
 }
 
 function valid202PositionEvent(ev, config){
-  if(!ev.symbol || !validateLot(ev.qty, config?.settings?.strictLots === true)) return false;
-  return config?.mode !== "202-standard" || ev.symbol === "OK4U" || ev.symbol === "MYT4U";
+  const strict = config?.settings?.strictLots === true;
+  if(!ev.symbol || !validateLot(ev.qty, strict)) return false;
+  if(config?.mode === "202-standard" && ev.symbol !== "OK4U" && ev.symbol !== "MYT4U") return false;
+  return config?.mode !== "202-custom" || validateLot(ev.qty, true) || ev.nonstandardLotConfirmed === true;
 }
 
 function adjustedQuantity(qty, ratio){
@@ -155,7 +157,34 @@ function adjustedQuantity(qty, ratio){
   return ratio < 1 ? Math.floor(next) : next;
 }
 
+function lockedShorts(player){
+  return (player?.shorts || []).filter(position => position.mustClose);
+}
+
+function needsShortLossCover(player){
+  const result = lockedShorts(player).reduce((sum, position) =>
+    sum + shortResult(position, position.closePrice), 0);
+  return result < 0 && player.cash + result < 0;
+}
+
+function eventAllowedDuringShortClose(state, ev){
+  const owners = state.players.filter(player => lockedShorts(player).length);
+  if(!owners.length) return true;
+  const owner = owners.find(player => player.id === ev.playerId);
+  if(!owner) return false;
+  if(ev.type === "CLOSE_SHORT"){
+    return lockedShorts(owner).some(position => position.id === ev.shortId);
+  }
+  if(ev.type === "SELL_STOCK" || ev.type === "SELL_PROPERTY"){
+    return needsShortLossCover(owner);
+  }
+  return ev.type === "DECLARE_202_BANKRUPTCY" && ev.reason === "short-loss" &&
+    needsShortLossCover(owner);
+}
+
 function apply(state, ev, config){
+  if(!eventAllowedDuringShortClose(state, ev)) return;
+
   if(ev.type === "ADD_PLAYER"){
     const prof = ev.profession && ev.profession.id === ev.professionId
       ? ev.profession
@@ -275,13 +304,14 @@ function apply(state, ev, config){
       const qty = Number(ev.qty);
       const strike = Number(ev.strike);
       if(!ev.symbol || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(strike) || strike <= 0) return;
-      const premiumTotal = legacy ? finiteNumber(ev.premium) :
-        finiteNumber(ev.premiumTotal === undefined ? qty * finiteNumber(ev.premiumPerShare) : ev.premiumTotal);
-      const premiumPerShare = legacy ? premiumTotal / qty : finiteNumber(ev.premiumPerShare);
+      const premiumPerShare = legacy ? finiteNumber(ev.premium) / qty : finiteNumber(ev.premiumPerShare);
+      if(!legacy && premiumPerShare < 0) return;
+      const premiumTotal = legacy ? finiteNumber(ev.premium) : qty * premiumPerShare;
+      const roundLimit = configuredOptionRounds(config, ev, legacy);
       p.options.push({
         id:ev.optionId, type:ev.optionType || ev.typeOpt || "call", symbol:ev.symbol,
         qty, strike, premiumPerShare, premiumTotal,
-        remaining:configuredOptionRounds(config, ev), active:true, sourceMode:ev.sourceMode || config?.mode
+        remaining:roundLimit, roundLimit, active:true, sourceMode:ev.sourceMode || config?.mode
       });
       p.cash -= premiumTotal;
       return;
@@ -290,8 +320,12 @@ function apply(state, ev, config){
     case "ADJUST_OPTION_ROUNDS": {
       const option = p.options.find(item => item.id === ev.optionId);
       const delta = Number(ev.delta);
-      if(!option || !Number.isInteger(delta) || delta === 0) return;
-      option.remaining = Math.max(0, option.remaining + delta);
+      if(!option || !Number.isInteger(delta) || Math.abs(delta) !== 1) return;
+      const roundLimit = Number.isInteger(option.roundLimit) && option.roundLimit >= 1
+        ? option.roundLimit
+        : configuredOptionRounds(config, option, true);
+      option.roundLimit = roundLimit;
+      option.remaining = Math.min(roundLimit, Math.max(0, option.remaining + delta));
       option.active = option.remaining > 0;
       return;
     }
@@ -325,8 +359,20 @@ function apply(state, ev, config){
       const recorded = Number(ev.marketPrice);
       const marketPrice = position.mustClose ? position.closePrice : recorded;
       if(!Number.isFinite(marketPrice)) return;
-      p.cash += shortResult(position, marketPrice);
+      const result = shortResult(position, marketPrice);
+      if(result < 0 && p.cash + result < 0) return;
+      p.cash += result;
       p.shorts = p.shorts.filter(item => item.id !== position.id);
+      return;
+    }
+
+    case "DECLARE_202_BANKRUPTCY": {
+      if(ev.reason !== "short-loss" || !needsShortLossCover(p)) return;
+      const locked = lockedShorts(p);
+      const result = locked.reduce((sum, position) => sum + shortResult(position, position.closePrice), 0);
+      p.cash = Math.max(0, p.cash + result);
+      p.shorts = p.shorts.filter(position => !position.mustClose);
+      p.skipTurns = Math.max(p.skipTurns, 3);
       return;
     }
 
