@@ -9,9 +9,42 @@ const KEY = "cashflow-bankir-v1";
 /* Версия приложения. При каждом обновлении сайта поднимай её здесь И в номерах
    ?v= у трёх тегов script в index.html — иначе браузер до десяти минут будет
    показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
-const APP_VERSION = "4 — 24 августа 2026";
+const APP_VERSION = "5 — 29 августа 2026";
 
-let G = { events: [], current: null, screen: "setup" };
+const GAME_MODES = [
+  {v:"101", t:"Cashflow 101"},
+  {v:"202-standard", t:"Cashflow 202 (стандарт)"},
+  {v:"202-custom", t:"Cashflow 202 (кастомный)"}
+];
+
+function normalizeMode(mode){
+  return (GAME_MODES.some(m => m.v === mode) ? mode : "101");
+}
+
+function normalizeOptionRounds(v){
+  const n = Number(v);
+  if(!Number.isFinite(n)) return 3;
+  return Math.max(1, Math.round(n));
+}
+
+function modeSettings(mode, raw){
+  if(mode === "202-standard") return {optionRounds:3, strictLots:true};
+  if(mode === "202-custom"){
+    return {optionRounds: normalizeOptionRounds(raw && raw.optionRounds), strictLots:false};
+  }
+  return {optionRounds:3, strictLots:false};
+}
+
+function defaultConfig(){
+  return {mode:"101", settings:{optionRounds:3, strictLots:false}};
+}
+
+let G = {
+  events: [],
+  current: null,
+  screen: "setup",
+  ...defaultConfig()
+};
 let S = { players: [] };            // производное состояние
 
 /* ---------- мелочи ---------- */
@@ -33,18 +66,48 @@ function cls(n){ return n > 0 ? "pos" : n < 0 ? "neg" : ""; }
 
 function player(){ return S.players.find(p => p.id === G.current) || null; }
 
+function isMode202(){ return G.mode !== "101"; }
+function optionRoundLimit(){ return G.settings && Number.isFinite(G.settings.optionRounds) ? Number(G.settings.optionRounds) : 3; }
+function modeTitle(mode){
+  const m = GAME_MODES.find(x => x.v === mode);
+  return m ? m.t : "Cashflow 101";
+}
+
 /* ---------- хранение ---------- */
 
 function save(){
-  try { localStorage.setItem(KEY, JSON.stringify({events: G.events, current: G.current})); }
+  try {
+    localStorage.setItem(KEY, JSON.stringify({
+      schemaVersion: 2,
+      mode: G.mode,
+      settings: G.settings,
+      events: G.events,
+      current: G.current
+    }));
+  }
   catch(e){ /* приватный режим — играем без автосохранения */ }
 }
+
+function normalizeSavedGame(d){
+  const rawMode = normalizeMode(d && d.mode);
+  return {
+    mode: rawMode,
+    settings: modeSettings(rawMode, d && d.settings),
+    events: Array.isArray(d && d.events) ? d.events : [],
+    current: d && d.current ? d.current : null
+  };
+}
+
 function load(){
   try {
     const raw = localStorage.getItem(KEY);
     if(!raw) return;
     const d = JSON.parse(raw);
-    if(Array.isArray(d.events)){ G.events = d.events; G.current = d.current || null; }
+    const norm = normalizeSavedGame(d);
+    G.mode = norm.mode;
+    G.settings = norm.settings;
+    G.events = norm.events;
+    G.current = norm.current;
   } catch(e){ /* битое сохранение игнорируем */ }
 }
 
@@ -147,6 +210,16 @@ function deltaPreview(p, dCash, dFlow){
     h += '<div class="row"><span class="k" style="color:var(--bad)">Наличных не хватает — понадобится кредит</span><span class="v"></span></div>';
   }
   return h;
+}
+
+function totalOpenOptions(){
+  return S.players.reduce((s, p) => s + (Array.isArray(p.options) ? p.options.length : 0), 0);
+}
+
+function optionLabel(opt){
+  const type = opt.type === "put" ? "пут" : "колл";
+  return type + " " + esc(opt.symbol) + " K " + money(opt.strike) + " x" + opt.qty +
+    (Number.isFinite(opt.remaining) ? " (× " + opt.remaining + ")" : "");
 }
 
 /* ---------- действия ---------- */
@@ -320,6 +393,85 @@ function actDownsized(p){
   });
 }
 
+function actBuyOption(p){
+  if(!isMode202()){
+    alert("Опционы в этой надстройке только для Cashflow 202.");
+    return;
+  }
+  const remainingDefault = optionRoundLimit();
+  openForm({
+    title: "Покупка опциона",
+    intro: "Оплата = премия сразу. Срок действия в раундах из настроек партии. " +
+      "Используй «Снять раунд по опционам», когда наступает следующий круг игры.",
+    fields: [
+      {k:"type", type:"select", label:"Тип опциона", options:[
+        {v:"call", t:"Call (покупка вверх)"},
+        {v:"put", t:"Put (покупка вниз)"}
+      ]},
+      {k:"symbol", type:"text", label:"Тикер", placeholder:"AAPL"},
+      {k:"strike", label:"Страйк/цена исполнения, $", value:0},
+      {k:"premium", label:"Премия (разово), $", value:0},
+      {k:"qty", label:"Количество", value:100}
+    ],
+    validate: v => (
+      (!v.symbol.trim() ? "Укажи тикер" :
+      v.strike <= 0 ? "Страйк должен быть больше 0" :
+      v.premium < 0 ? "Премия не может быть отрицательной" :
+      v.qty <= 0 ? "Количество должно быть больше 0" : null)
+    ),
+    preview: v => {
+      return '<div class="row"><span class="k">Будет списано</span><span class="v">' +
+        money(-Math.max(0, v.premium || 0)) + "</span></div>" +
+        '<div class="row"><span class="k">Срок</span><span class="v">до ' +
+        remainingDefault + " раундов</span></div>";
+    },
+    submit: v => {
+      const premium = Math.max(0, v.premium || 0);
+      if(premium > p.cash && !confirm("Недостаточно наличных для премии. Продолжить и уйти в минус, или добавить кредит?")){
+        return;
+      }
+      push({type:"BUY_OPTION", playerId:p.id, optionId:uid(), symbol:v.symbol.trim(), typeOpt:v.type,
+        strike:v.strike, premium, qty:v.qty, remaining:remainingDefault, sourceMode:G.mode,
+        label:"Опцион " + (v.type === "call" ? "Call" : "Put") + " " + v.symbol.trim() + " — " + money(v.premium)});
+    }
+  });
+}
+
+function actExerciseOption(p){
+  const options = Array.isArray(p.options) ? p.options : [];
+  if(!options.length){ alert("У этого игрока нет открытых опционов."); return; }
+
+  openForm({
+    title: "Использование опциона",
+    intro: "Задай рыночную цену для выбранного контракта.",
+    fields: [
+      {k:"optionId", type:"select", label:"Опцион", options:options.map(o => ({v:o.id, t:optionLabel(o)}))},
+      {k:"marketPrice", label:"Текущая цена", value:0}
+    ],
+    preview: v => {
+      const opt = options.find(x => x.id === v.optionId);
+      if(!opt) return "";
+      const payout = optionPayout(opt, v.marketPrice);
+      return '<div class="row"><span class="k">Премия уже оплачена</span><span class="v">' +
+        money(-opt.premium) + "</span></div>" +
+        '<div class="row"><span class="k">Результат</span><span class="v">' +
+        (payout > 0 ? "+" : "") + money(payout) + "</span></div>";
+    },
+    validate: v => (v.marketPrice <= 0 ? "Цена рынка должна быть больше 0" : null),
+    submit: v => {
+      const opt = options.find(x => x.id === v.optionId);
+      if(!opt) return;
+      push({type:"EXERCISE_OPTION", playerId:p.id, optionId:v.optionId, marketPrice:v.marketPrice,
+        label:"Использован опцион " + optionPayout(opt, v.marketPrice) + " по " + money(v.marketPrice)});
+    }
+  });
+}
+
+function actRoundOptions(){
+  if(!isMode202() || totalOpenOptions() === 0){ alert("Открытых опционов нет."); return; }
+  push({type:"OPTION_ROUND", label:"Тик-округ по опционам"});
+}
+
 function actLoan(p){
   openForm({
     title: "Кредит в банке",
@@ -487,20 +639,50 @@ function actDreamToken(p){
 }
 
 function actFTDream(p){
-  if(!p.dream){ actSetDream(p); return; }
-  if(p.dream.bought){ alert("Мечта уже куплена."); return; }
-  const price = dreamPrice(p);
+  const own = p.dream ? {id:"own", name:p.dream.name, owner:p, price: dreamPrice(p), own:true} : null;
+  const others = S.players
+    .filter(x => x.id !== p.id && x.dream && !x.dream.bought)
+    .map(x => ({id:x.id, name:x.name, owner:x, price:dreamPrice(x), own:false}));
+
+  const options = [];
+  if(own && !own.owner.dream.bought) options.push({v:own.id, t:"Своя: " + esc(own.name) + " — " + money(own.price), data:own});
+  others.forEach(x => options.push({v:x.id, t:"Чужая: " + esc(x.owner.name) + " — " + esc(x.name) + " — " + money(x.price), data:x}));
+
+  if(!options.length){
+    if(!p.dream){
+      alert("Сначала задай свою мечту, потом можно будет покупать и чужие.");
+      actSetDream(p);
+    } else {
+      alert("Сейчас нельзя купить ни одной мечты.");
+    }
+    return;
+  }
+
   openForm({
-    title: "Купить свою Мечту", ok: "Купить",
-    intro: "Покупка своей Мечты — это победа.",
-    preview: () =>
-      '<div class="row"><span class="k">' + esc(p.dream.name) + "</span><span class=\"v\"></span></div>" +
-      '<div class="row"><span class="k">Первоначальная стоимость</span><span class="v">' + money(p.dream.base) + "</span></div>" +
-      '<div class="row"><span class="k">Чужих жетонов</span><span class="v">' + p.dream.tokens + "</span></div>" +
-      '<div class="row total"><span class="k">К оплате</span><span class="v">' + money(price) + "</span></div>" +
-      deltaPreview(p, -price, 0),
-    submit: () => push({type:"FT_DREAM", playerId:p.id,
-      label:"Куплена своя Мечта «" + p.dream.name + "» за " + money(price) + " — победа"})
+    title: "Купить мечту",
+    intro: "В 202 можно купить свою мечту или любую чужую (до покупки). Для победы нужно 2 чужие мечты или своя.",
+    fields: [{k:"target", type:"select", label:"Что покупаем", options:options.map(x => ({v:x.v, t:x.t}))}],
+    preview: v => {
+      const item = options.find(x => x.v === v.target);
+      if(!item) return "";
+      const data = item.data;
+      const price = data.price;
+      return '<div class="row"><span class="k">К оплате</span><span class="v">' + money(price) + "</span></div>" +
+        (data.own ? "" : '<div class="row"><span class="k">Владелец</span><span class="v">' + esc(data.owner.name) + "</span></div>") +
+        deltaPreview(p, -price, 0);
+    },
+    submit: v => {
+      if(v.target === "own"){
+        const price = dreamPrice(p);
+        if(p.dream.bought){ alert("Свою мечту уже купили."); return; }
+        push({type:"FT_DREAM", playerId:p.id, label:"Куплена своя Мечта «" + p.dream.name + "» за " + money(price) + " — победа"});
+        return;
+      }
+      const chosen = others.find(x => x.id === v.target);
+      if(!chosen) return;
+      push({type:"FT_OTHER_DREAM", playerId:p.id, ownerId:chosen.owner.id,
+        label:"Куплена чужая мечта «" + chosen.owner.dream.name + "» игрока «" + chosen.owner.name + "» за " + money(chosen.price)});
+    }
   });
 }
 
@@ -536,16 +718,38 @@ function renderChips(){
 
 function renderSetup(){
   const sel = $("#np-prof");
+  const modeSel = $("#np-mode");
+  const modeRound = $("#np-option-rounds");
+  const modeRoundWrap = $("#np-option-rounds-wrap");
+
+  if(!modeSel.options.length){
+    modeSel.innerHTML = GAME_MODES.map(m => '<option value="' + m.v + '">' + esc(m.t) + "</option>").join("");
+  }
+  modeSel.value = G.mode || "101";
+
   if(!sel.options.length){
     sel.innerHTML = PROFESSIONS.map(p => '<option value="' + p.id + '">' + esc(p.title) + "</option>").join("");
   }
+  $("#setup-mode-hint").textContent = modeTitle(G.mode) + (G.mode === "202-custom" ? ", " + optionRoundLimit() + " раундов опционов" : "");
   const prof = PROFESSIONS.find(x => x.id === sel.value) || PROFESSIONS[0];
   const tmp = blankPlayer("tmp", "tmp", prof);
   const d = derive(tmp);
+  const hasPortfolio = ((prof.initialPortfolio && (
+    (Array.isArray(prof.initialPortfolio.stocks) && prof.initialPortfolio.stocks.length) ||
+    (Array.isArray(prof.initialPortfolio.properties) && prof.initialPortfolio.properties.length) ||
+    Number(prof.initialPortfolio.cash || 0) !== 0
+  )) ? true : false);
   $("#np-hint").innerHTML =
     "Зарплата " + money(prof.salary) + " · расход " + money(d.totalExpenses) +
     " · поток <b class=\"" + cls(d.cashflow) + "\">" + signed(d.cashflow) + "</b>" +
-    " · на старте " + money(startingCash(tmp));
+    " · на старте " + money(startingCash(tmp)) +
+    (hasPortfolio ? "<br>Включён начальный инвестиционный портфель профессии" : "");
+
+  modeRoundWrap.classList.toggle("hide", G.mode !== "202-custom");
+  modeRound.value = optionRoundLimit();
+  const locked = S.players.length > 0;
+  modeSel.disabled = locked;
+  modeRound.disabled = locked;
 
   const list = $("#setup-list");
   $("#setup-list-card").classList.toggle("hide", !S.players.length);
@@ -590,6 +794,14 @@ function reportRatRace(p){
   DEBTS.forEach(dd => { if(l[dd.k] > 0) h += row(dd.n, money(l[dd.k])); });
   p.props.forEach(a => { if(a.mortgage > 0) h += row("Ипотека: " + esc(a.name), money(a.mortgage)); });
   if(p.bankLoan > 0) h += row("Кредит банка", money(p.bankLoan));
+  if(p.options && p.options.length){
+    h += '<div class="sub">Открытые опционы</div>';
+    p.options.forEach(o => {
+      const payoutText = "остаток " + o.remaining + " · " + (o.type === "call" ? "Call" : "Put") +
+        " " + esc(o.symbol) + ", K=" + money(o.strike) + ", x" + o.qty;
+      h += row("Опцион", payoutText);
+    });
+  }
 
   return h;
 }
@@ -610,6 +822,20 @@ function reportFT(p){
     h += row(esc(p.dream.name), p.dream.bought ? "куплена" : money(dreamPrice(p)));
     h += row("Первоначальная стоимость", money(p.dream.base));
     h += row("Чужих жетонов", String(p.dream.tokens));
+    if(Array.isArray(p.otherDreams) && p.otherDreams.length){
+      h += row("Чужие мечты куплены", String(p.otherDreams.length));
+      p.otherDreams.forEach(od => {
+        h += row("— " + esc(od.name), "с игроком " + esc(od.ownerName) + " за " + money(od.price));
+      });
+    }
+  }
+  if(p.options && p.options.length){
+    h += '<div class="sub">Открытые опционы</div>';
+    p.options.forEach(o => {
+      const payoutText = "остаток " + o.remaining + " · " + (o.type === "call" ? "Call" : "Put") +
+        " " + esc(o.symbol) + ", K=" + money(o.strike) + ", x" + o.qty;
+      h += row("Опцион", payoutText);
+    });
   }
   return h;
 }
@@ -621,7 +847,8 @@ function renderTable(){
   const d = ft ? deriveFT(p) : derive(p);
   const flow = ft ? d.income : d.cashflow;
 
-  $("#hdr-sub").textContent = p.name + " · " + (ft ? "скоростная дорожка" : p.professionTitle);
+  $("#hdr-sub").textContent = p.name + " · " + (ft ? "скоростная дорожка" : p.professionTitle) +
+    " · " + modeTitle(G.mode);
 
   $("#alerts").innerHTML = warnings(p)
     .map(w => '<div class="note ' + w.level + '">' + w.text + "</div>").join("");
@@ -647,17 +874,26 @@ function renderTable(){
       (p.dream.tokens ? " · жетонов " + p.dream.tokens : "") +
       (p.dream.bought ? " · куплена" : "") + "</span>");
   }
+  if(totalOpenOptions() > 0){
+    badges.push('<button class="badge" data-tick="optionsRound">📆 Опционных раундов: в игре ' +
+      totalOpenOptions() + " · снять 1 для всех</button>");
+  }
   $("#badges").innerHTML = badges.join("");
   $("#badges").querySelectorAll("[data-tick]").forEach(el => el.onclick = () => {
-    push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
-      label: el.dataset.tick === "charity" ? "Ход с благотворительностью" : "Пропущен ход"});
+    if(el.dataset.tick === "charity"){
+      push({type:"TICK_CHARITY", playerId:p.id, label:"Ход с благотворительностью"});
+    } else if(el.dataset.tick === "skip"){
+      push({type:"TICK_SKIP", playerId:p.id, label:"Пропущен ход"});
+    } else if(el.dataset.tick === "optionsRound"){
+      actRoundOptions();
+    }
   });
 
   const acts = ft ? [
     ["💵","День CASHFLOW", () => actFTPayday(p), true],
     ["🏢","Купить бизнес", () => actFTBiz(p)],
     ["❤️","Благотворительность", () => actFTCharity(p)],
-    ["⭐","Купить свою Мечту", () => actFTDream(p)],
+    ["⭐","Купить мечту", () => actFTDream(p)],
     ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
     ["✏️","Моя мечта", () => actSetDream(p)],
     ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
@@ -682,6 +918,15 @@ function renderTable(){
     ["➖","Разовый расход", () => actCash(p, "out")],
     ["✏️","Моя мечта", () => actSetDream(p)]
   ];
+  if(isMode202()){
+    if(ft){
+      acts.splice(1, 0, ["📈","Купить опцион", () => actBuyOption(p)]);
+      acts.splice(2, 0, ["⚖️","Использовать опцион", () => actExerciseOption(p)]);
+    } else {
+      acts.splice(3, 0, ["📊","Купить опцион", () => actBuyOption(p)]);
+      acts.splice(4, 0, ["⚖️","Использовать опцион", () => actExerciseOption(p)]);
+    }
+  }
   if(!ft && d.canEscape) acts.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
 
   $("#acts").innerHTML = acts.map((a, i) =>
@@ -712,7 +957,7 @@ function render(){
   $("#scr-log").classList.toggle("hide", G.screen !== "log");
   $("#nav-log").textContent = G.screen === "log" ? "Назад" : "Журнал";
 
-  if(G.screen === "setup"){ $("#hdr-sub").textContent = "новая партия"; renderSetup(); }
+  if(G.screen === "setup"){ $("#hdr-sub").textContent = "новая партия · " + modeTitle(G.mode); renderSetup(); }
   else if(G.screen === "table") renderTable();
   else renderLog();
 }
@@ -738,7 +983,12 @@ function menu(){
         return;
       }
       if(v.a === "export"){
-        const blob = new Blob([JSON.stringify({events:G.events}, null, 2)], {type:"application/json"});
+        const blob = new Blob([JSON.stringify({
+          schemaVersion: 2,
+          mode: G.mode,
+          settings: G.settings,
+          events: G.events
+        }, null, 2)], {type:"application/json"});
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = "cashflow-partiya.json";
@@ -747,22 +997,27 @@ function menu(){
         const inp = document.createElement("input");
         inp.type = "file"; inp.accept = "application/json";
         inp.onchange = () => {
-          const f = inp.files[0]; if(!f) return;
-          const r = new FileReader();
-          r.onload = () => {
-            try {
-              const d = JSON.parse(r.result);
-              if(!Array.isArray(d.events)) throw 0;
-              G.events = d.events; G.current = null; G.screen = "table";
-              save(); recompute(); render();
-            } catch(e){ alert("Не похоже на файл партии."); }
-          };
+            const f = inp.files[0]; if(!f) return;
+            const r = new FileReader();
+            r.onload = () => {
+              try {
+                const d = JSON.parse(r.result);
+                const norm = normalizeSavedGame(d);
+                if(!Array.isArray(norm.events)) throw 0;
+                G.events = norm.events;
+                G.current = norm.current;
+                G.mode = norm.mode;
+                G.settings = norm.settings;
+                G.screen = "table";
+                save(); recompute(); render();
+              } catch(e){ alert("Не похоже на файл партии."); }
+            };
           r.readAsText(f);
         };
         inp.click();
       } else if(v.a === "reset"){
         if(!confirm("Стереть партию и начать заново?")) return;
-        G = {events:[], current:null, screen:"setup"};
+        G = {events:[], current:null, screen:"setup", ...defaultConfig()};
         save(); recompute(); render();
       }
     }
@@ -774,12 +1029,26 @@ function init(){
   recompute();
 
   $("#np-prof").addEventListener("change", renderSetup);
+  $("#np-mode").addEventListener("change", () => {
+    if(S.players.length) return;
+    const sel = normalizeMode($("#np-mode").value);
+    G.mode = sel;
+    G.settings = modeSettings(sel, {optionRounds: normalizeOptionRounds($("#np-option-rounds").value)});
+    save(); renderSetup();
+  });
+  $("#np-option-rounds").addEventListener("change", () => {
+    if(S.players.length || G.mode !== "202-custom") return;
+    G.settings = modeSettings(G.mode, {optionRounds: normalizeOptionRounds($("#np-option-rounds").value)});
+    save(); renderSetup();
+  });
   $("#np-add").onclick = () => {
     const name = $("#np-name").value.trim();
     if(!name){ alert("Как зовут игрока?"); return; }
+    const prof = PROFESSIONS.find(x => x.id === $("#np-prof").value) || {};
     const id = uid();
     push({type:"ADD_PLAYER", playerId:id, name, professionId:$("#np-prof").value,
-      label:"В игру вошёл " + name + " — " + (PROFESSIONS.find(x => x.id === $("#np-prof").value) || {}).title});
+      initialPortfolio: prof.initialPortfolio || {},
+      label:"В игру вошёл " + name + " — " + (prof.title || "").trim()});
     $("#np-name").value = "";
     G.current = id; G.screen = "setup";
     render();

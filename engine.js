@@ -6,8 +6,6 @@
    Состояние стола = свёртка журнала событий. Нигде не хранится
    ни пассивный доход, ни общий расход, ни денежный поток — всё
    это каждый раз выводится из списка активов и пассивов.
-   Поэтому цифры физически не могут разойтись между собой,
-   а удаление любой строки журнала честно пересчитывает партию.
    ============================================================ */
 
 function blankPlayer(id, name, prof){
@@ -28,7 +26,9 @@ function blankPlayer(id, name, prof){
     charityTurns: 0,
     skipTurns: 0,
     dream: null,  // {name, base, tokens, bought} — выбирается в начале партии
-    ft: null      // {startIncome, target, businesses, charity}
+    otherDreams: [], // [{ownerId, ownerName, name, price}]
+    ft: null,       // {startIncome, target, businesses, charity}
+    options: []     // [{id,symbol,type,strike,premium,qty,remaining,sourceMode}]
   };
 }
 
@@ -58,14 +58,16 @@ function deriveFT(p){
   const biz = p.ft.businesses.reduce((s,b) => s + b.cashflow, 0);
   const income = p.ft.startIncome + biz;
   const bought = !!(p.dream && p.dream.bought);
+  const otherDreams = Array.isArray(p.otherDreams) ? p.otherDreams.length : 0;
   return {
     biz, income,
     target: p.ft.target,
     left: Math.max(0, p.ft.target - income),
     dreamBought: bought,
-    /* Побеждает только тот, кто купил СВОЮ Мечту, либо первым набрал
-       нужный пассивный доход (правила, стр. 1). */
-    won: income >= p.ft.target || bought
+    otherDreamsBought: otherDreams,
+    /* Побеждает только тот, кто купил СВОЮ мечту, либо первым набрал
+       нужный пассивный доход, либо имеет 2 чужие мечты. */
+    won: income >= p.ft.target || bought || otherDreams >= 2
   };
 }
 
@@ -76,8 +78,50 @@ function dreamPrice(p){
   return p.dream.base * (1 + p.dream.tokens);
 }
 
+function optionPayout(option, marketPrice){
+  if(!option || !Number.isFinite(option.strike) || !Number.isFinite(option.qty) || !Number.isFinite(marketPrice)){
+    return 0;
+  }
+  if(option.type === "call") return Math.max(0, (marketPrice - option.strike) * option.qty);
+  if(option.type === "put") return Math.max(0, (option.strike - marketPrice) * option.qty);
+  return 0;
+}
+
 /* Стартовые наличные: месячный денежный поток плюс сбережения (правила, стр. 2). */
 function startingCash(p){ return derive(p).cashflow + p.savings; }
+
+function normalizePortfolioValue(n){
+  return Number.isFinite(n) ? n : 0;
+}
+
+function addInitialPortfolio(np, profPortfolio, addedPortfolio){
+  const p = Object.assign({cash:0, stocks:[], properties:[]}, profPortfolio || {}, addedPortfolio || {});
+  (p.stocks || []).forEach((s, idx) => {
+    if(!s || !s.symbol) return;
+    np.stocks.push({
+      id: "ip-stock-" + np.id + "-" + idx,
+      symbol: s.symbol,
+      qty: Math.max(0, normalizePortfolioValue(s.qty)),
+      price: Math.max(0, normalizePortfolioValue(s.price)),
+      div: Math.max(0, normalizePortfolioValue(s.div))
+    });
+  });
+  (p.properties || []).forEach((a, idx) => {
+    if(!a || !a.name) return;
+    const price = Math.max(0, normalizePortfolioValue(a.price));
+    const down = Math.max(0, normalizePortfolioValue(a.down));
+    np.props.push({
+      id: "ip-prop-" + np.id + "-" + idx,
+      name: a.name,
+      kind: a.kind || "property",
+      down,
+      price,
+      mortgage: a.mortgage != null ? Math.max(0, normalizePortfolioValue(a.mortgage)) : Math.max(0, price - down),
+      cashflow: Math.max(0, normalizePortfolioValue(a.cashflow))
+    });
+  });
+  np.cash += Math.max(0, normalizePortfolioValue(p.cash));
+}
 
 /* Подъёмные при выходе на дорожку: пассивный доход, округлённый
    до ближайшей тысячи, умноженный на сто (правила, стр. 11). */
@@ -90,8 +134,35 @@ function apply(state, ev){
     const prof = PROFESSIONS.find(x => x.id === ev.professionId);
     if(!prof || state.players.some(x => x.id === ev.playerId)) return;
     const np = blankPlayer(ev.playerId, ev.name, prof);
-    np.cash = startingCash(np);
+    addInitialPortfolio(np, prof.initialPortfolio, ev.initialPortfolio);
+    np.cash += startingCash(np);
     state.players.push(np);
+    return;
+  }
+
+  if(ev.type === "OPTION_ROUND"){
+    state.players.forEach(p => {
+      p.options = p.options.filter(opt => {
+        const remaining = Number.isFinite(Number(opt.remaining)) ? Number(opt.remaining) : 3;
+        if(remaining <= 1) return false;
+        opt.remaining = remaining - 1;
+        return true;
+      });
+    });
+    return;
+  }
+
+  /* Рыночное дробление относится к бумаге, а не к отдельной записи игрока.
+     Старое SPLIT ниже оставлено для точного воспроизведения старых журналов. */
+  if(ev.type === "MARKET_SPLIT"){
+    const ratio = Number(ev.ratio);
+    if(!ev.symbol || !Number.isFinite(ratio) || ratio <= 0) return;
+    state.players.forEach(player => player.stocks.forEach(h => {
+      if(h.symbol === ev.symbol){
+        h.qty *= ratio;
+        h.price /= ratio;
+      }
+    }));
     return;
   }
 
@@ -125,6 +196,29 @@ function apply(state, ev){
       if(ev.direction === "split"){ h.qty = h.qty * 2; h.price = h.price / 2; }
       else { h.qty = Math.floor(h.qty / 2); h.price = h.price * 2; }
       if(h.qty <= 0) p.stocks = p.stocks.filter(x => x.id !== h.id);
+      return;
+    }
+
+    case "BUY_OPTION":
+      p.options.push({
+        id: ev.optionId,
+        symbol: ev.symbol,
+        type: ev.typeOpt,
+        strike: ev.strike,
+        premium: ev.premium,
+        qty: ev.qty,
+        remaining: Number.isFinite(ev.remaining) ? Number(ev.remaining) : 3,
+        sourceMode: ev.sourceMode
+      });
+      p.cash -= ev.premium;
+      return;
+
+    case "EXERCISE_OPTION": {
+      const i = p.options.findIndex(x => x.id === ev.optionId);
+      if(i === -1) return;
+      const option = p.options[i];
+      p.cash += optionPayout(option, ev.marketPrice);
+      p.options = p.options.filter(x => x.id !== option.id);
       return;
     }
 
@@ -172,7 +266,7 @@ function apply(state, ev){
     }
 
     case "CHILD":
-      if(p.children >= 3) return;   // лимит игры — трое детей
+      if(p.children >= 3) return;
       p.children += 1;
       return;
 
@@ -239,12 +333,31 @@ function apply(state, ev){
     /* Покупка СВОЕЙ Мечты — это победа. */
     case "FT_DREAM":
       if(!p.ft) return;
-      if(!p.dream){   // журнал, записанный прежней версией приложения
+      if(!p.dream){
         p.dream = {name: ev.name || "Мечта", base: ev.price || 0, tokens: 0, bought: false};
       }
       p.cash -= dreamPrice(p);
       p.dream.bought = true;
       return;
+
+    /* Покупка другой мечты на скоростной. Можно купить несколько разных. */
+    case "FT_OTHER_DREAM": {
+      if(!p.ft) return;
+      if(p.id === ev.ownerId) return;
+      const owner = state.players.find(x => x.id === ev.ownerId);
+      if(!owner || !owner.dream || owner.dream.bought) return;
+      if((owner.dream.otherBoughtBy || []).includes(p.id)) return;
+      owner.dream.otherBoughtBy = owner.dream.otherBoughtBy || [];
+      owner.dream.otherBoughtBy.push(p.id);
+      p.cash -= dreamPrice(owner);
+      p.otherDreams.push({
+        ownerId: owner.id,
+        ownerName: owner.name,
+        name: owner.dream.name,
+        price: dreamPrice(owner)
+      });
+      return;
+    }
 
     case "FT_LOSE":
       p.cash = ev.share === "all" ? 0 : Math.round(p.cash / 2);
@@ -266,9 +379,13 @@ function warnings(p){
   if(p.ft){
     const f = deriveFT(p);
     if(f.won) out.push({level:"good", text:
-      f.dreamBought ? "Своя Мечта куплена — победа!" : "Цель по пассивному доходу достигнута — победа!"});
+      f.dreamBought
+        ? "Своя Мечта куплена — победа!"
+        : f.otherDreamsBought >= 2
+          ? "2 чужие мечты куплены — победа!"
+          : "Цель по пассивному доходу достигнута — победа!"});
     if(!p.dream) out.push({level:"warn", text:
-      "Мечта не выбрана. Задай её кнопкой «Моя мечта» — иначе победу по Мечте не отследить."});
+      "Мечту не выбрала. Задай её кнопкой «Моя мечта» или покупай чужие мечты."});
     if(p.cash < 0) out.push({level:"bad", text:"Наличные ушли в минус."});
     return out;
   }
