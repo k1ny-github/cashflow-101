@@ -31,6 +31,13 @@ function signed(n){
 }
 function cls(n){ return n > 0 ? "pos" : n < 0 ? "neg" : ""; }
 
+function validatePositiveMoney(value, label, allowZero){
+  if(!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)){
+    return label + ": укажи положительное число";
+  }
+  return null;
+}
+
 function player(){ return S.players.find(p => p.id === G.current) || null; }
 
 /* ---------- хранение ---------- */
@@ -171,7 +178,11 @@ function actBuyStock(p){
       {k:"div",    label:"Дивиденд на акцию в месяц, $", value:0,
        hint:"Если карточка не платит дивиденды — оставь ноль."}
     ],
-    validate: v => (!v.symbol.trim() ? "Укажи символ" : v.qty <= 0 ? "Количество должно быть больше нуля" : null),
+    validate: v => (!v.symbol.trim() ? "Укажи символ" :
+      validatePositiveMoney(v.price, "Цена") ||
+      validatePositiveMoney(v.qty, "Количество") ||
+      validatePositiveMoney(v.div, "Дивиденд", true) ||
+      (p.cash < v.price * v.qty ? "Наличными не хватает — сначала возьми кредит." : null)),
     preview: v => '<div class="row"><span class="k">Стоимость покупки</span><span class="v">' +
         money(v.price * v.qty) + "</span></div>" + deltaPreview(p, -v.price * v.qty, v.div * v.qty),
     submit: v => push({type:"BUY_STOCK", playerId:p.id, assetId:uid(),
@@ -191,7 +202,12 @@ function actBuyProp(p, kind){
       {k:"price",    label:"Цена, $", value:0},
       {k:"cashflow", label:"Денежный поток в месяц, $", value:0}
     ],
-    validate: v => (!v.name.trim() ? "Укажи название" : v.price < v.down ? "Цена меньше первого взноса" : null),
+    validate: v => (!v.name.trim() ? "Укажи название" :
+      validatePositiveMoney(v.down, "Первый взнос") ||
+      validatePositiveMoney(v.price, "Цена") ||
+      validatePositiveMoney(v.cashflow, "Денежный поток", true) ||
+      (v.price < v.down ? "Цена меньше первого взноса" : null) ||
+      (p.cash < v.down ? "Наличными не хватает — сначала возьми кредит." : null)),
     preview: v => '<div class="row"><span class="k">Ипотека (пассив)</span><span class="v">' +
         money(v.price - v.down) + "</span></div>" +
         '<div class="row"><span class="k">ROI за год</span><span class="v">' +
@@ -232,7 +248,9 @@ function actSell(p){
         money(v.price) + " − " + money(a.mortgage) + " = <b class=\"" + cls(res) + "\">" + money(res) + "</b></span></div>" +
         deltaPreview(p, res, -a.cashflow);
     },
-    submit: v => {
+      validate: v => validatePositiveMoney(v.price, "Цена продажи") ||
+        (v.qty < 0 ? "Количество не может быть отрицательным" : null),
+      submit: v => {
       const [t, id] = v.sel.split(":");
       if(t === "s"){
         const h = p.stocks.find(x => x.id === id); if(!h) return;
@@ -249,28 +267,32 @@ function actSell(p){
 }
 
 function actSplit(p){
-  if(!p.stocks.length){ alert("Нет акций."); return; }
+  const symbols = Array.from(new Set(S.players.flatMap(x => x.stocks.map(h => h.symbol))));
+  if(!symbols.length){ alert("Нет акций."); return; }
   openForm({
-    title: "Дробление акций",
+    title: "Рыночное дробление акций",
+    intro: "Изменит количество и цену этой бумаги у всех игроков, которые ей владеют.",
     fields: [
-      {k:"sel", type:"select", label:"Бумага",
-       options:p.stocks.map(h => ({v:h.id, t:h.symbol + " — " + h.qty + " шт по " + money(h.price)}))},
+      {k:"symbol", type:"select", label:"Бумага",
+       options:symbols.map(symbol => ({v:symbol, t:symbol}))},
       {k:"dir", type:"select", label:"Тип",
        options:[{v:"split", t:"Сплит 2:1 — акций вдвое больше"},
                 {v:"reverse", t:"Обратный сплит 1:2 — акций вдвое меньше"}]}
-    ],
-    preview: v => {
-      const h = p.stocks.find(x => x.id === v.sel); if(!h) return "";
-      const q = v.dir === "split" ? h.qty * 2 : Math.floor(h.qty / 2);
-      const pr = v.dir === "split" ? h.price / 2 : h.price * 2;
-      return '<div class="row"><span class="k">Станет</span><span class="v">' +
-        q + " шт по " + money(pr) + "</span></div>";
-    },
-    submit: v => {
-      const h = p.stocks.find(x => x.id === v.sel); if(!h) return;
-      push({type:"SPLIT", playerId:p.id, assetId:v.sel, direction:v.dir,
-        label:(v.dir === "split" ? "Сплит 2:1 — " : "Обратный сплит 1:2 — ") + h.symbol});
-    }
+      ],
+      preview: v => {
+        const ratio = v.dir === "split" ? 2 : 0.5;
+        const holdings = S.players.flatMap(x => x.stocks.filter(h => h.symbol === v.symbol));
+        return '<div class="row"><span class="k">Затронуто пакетов</span><span class="v">' +
+          holdings.length + "</span></div>" + holdings.map(h =>
+            '<div class="row"><span class="k">Станет</span><span class="v">' +
+            h.qty * ratio + " шт по " + money(h.price / ratio) + "</span></div>"
+          ).join("");
+      },
+      submit: v => {
+        push({type:"MARKET_SPLIT", playerId:p.id, symbol:v.symbol,
+          ratio:v.dir === "split" ? 2 : 0.5,
+          label:(v.dir === "split" ? "Сплит 2:1 — " : "Обратный сплит 1:2 — ") + v.symbol});
+      }
   });
 }
 
@@ -282,6 +304,7 @@ function actDoodad(p){
       {k:"title", type:"text", label:"Что купили", placeholder:"Новый катер"},
       {k:"amount", label:"Сумма, $", value:0}
     ],
+    validate: v => validatePositiveMoney(v.amount, "Сумма"),
     preview: v => deltaPreview(p, -v.amount, 0),
     submit: v => push({type:"DOODAD", playerId:p.id, amount:v.amount,
       label:"Всякая всячина: " + (v.title.trim() || "трата") + " " + money(-v.amount)})
@@ -347,9 +370,14 @@ function actRepay(p){
       {k:"amount", label:"Сумма для банковского кредита, $", value:1000, step:1000}
     ],
     validate: v => {
-      if(v.sel !== "bank") return null;
-      if(v.amount <= 0 || v.amount % 1000 !== 0) return "Сумма должна быть кратна $1000";
-      if(v.amount > p.bankLoan) return "Больше, чем сам долг";
+      if(v.sel === "bank"){
+        if(validatePositiveMoney(v.amount, "Сумма") || v.amount % 1000 !== 0) return "Сумма должна быть кратна $1000";
+        if(v.amount > p.bankLoan) return "Больше, чем сам долг";
+        if(v.amount > p.cash) return "Наличными не хватает для погашения кредита.";
+        return null;
+      }
+      const k = v.sel.slice(2);
+      if(p.cash < p.liabilities[k]) return "Наличными не хватает для погашения долга.";
       return null;
     },
     preview: v => {
@@ -383,6 +411,7 @@ function actCash(p, dir){
       {k:"title", type:"text", label:"Описание", placeholder: inc ? "Продажа права на сделку" : "Прочее"},
       {k:"amount", label:"Сумма, $", value:0}
     ],
+    validate: v => validatePositiveMoney(v.amount, "Сумма"),
     preview: v => deltaPreview(p, inc ? v.amount : -v.amount, 0),
     submit: v => push({type: inc ? "CASH_IN" : "CASH_OUT", playerId:p.id, amount:v.amount,
       label:(v.title.trim() || (inc ? "Разовый доход" : "Разовый расход")) + " " +
@@ -423,7 +452,10 @@ function actFTBiz(p){
       {k:"down", label:"Первый взнос, $", value:0},
       {k:"cashflow", label:"Денежный поток в месяц, $", value:0}
     ],
-    validate: v => (!v.name.trim() ? "Укажи название" : null),
+    validate: v => (!v.name.trim() ? "Укажи название" :
+      validatePositiveMoney(v.down, "Первый взнос") ||
+      validatePositiveMoney(v.cashflow, "Денежный поток", true) ||
+      (p.cash < v.down ? "Наличными не хватает — кредит на дорожке недоступен." : null)),
     preview: v => deltaPreview(p, -v.down, v.cashflow),
     submit: v => push({type:"FT_BUY_BIZ", playerId:p.id, assetId:uid(),
       name:v.name.trim(), down:v.down, cashflow:v.cashflow,
@@ -437,7 +469,8 @@ function actFTCharity(p){
     title: "Благотворительность",
     intro: "Не обязательна. Действует до конца игры: на каждом ходу выбираешь, кидать одну, две или три кости.",
     fields: [{k:"amount", label:"Сумма с карточки, $", value:100000, step:1000}],
-    validate: v => (v.amount <= 0 ? "Укажи сумму" : null),
+    validate: v => validatePositiveMoney(v.amount, "Сумма") ||
+      (p.cash < v.amount ? "Наличными не хватает — кредит на дорожке недоступен." : null),
     preview: v => deltaPreview(p, -v.amount, 0),
     submit: v => push({type:"FT_CHARITY", playerId:p.id, amount:v.amount,
       label:"Благотворительность на дорожке " + money(-v.amount) + " — 1–3 кости до конца игры"})
@@ -445,18 +478,17 @@ function actFTCharity(p){
 }
 
 function actSetDream(p){
+  if(p.dream){ alert("Мечту нельзя менять после начала партии или появления жетонов."); return; }
   openForm({
-    title: p.dream ? "Сменить мечту" : "Моя мечта",
+    title: "Моя мечта",
     intro: "Мечта выбирается в начале партии — на неё ставится Сыр. Купить её сможешь только ты, и это победа.",
     fields: [
       {k:"name", type:"text", label:"Название с розового поля",
-       value: p.dream ? p.dream.name : "", placeholder:"Кругосветное путешествие"},
-      {k:"price", label:"Первоначальная стоимость, $", value: p.dream ? p.dream.base : 0, step:1000}
+       value: "", placeholder:"Кругосветное путешествие"},
+      {k:"price", label:"Первоначальная стоимость, $", value:0, step:1000}
     ],
-    validate: v => (!v.name.trim() ? "Укажи мечту" : v.price <= 0 ? "Укажи стоимость" : null),
-    preview: v => (p.dream && p.dream.tokens > 0
-      ? '<div class="row"><span class="k">Жетоны обнулятся</span><span class="v">сейчас их ' + p.dream.tokens + "</span></div>"
-      : '<div class="row"><span class="k">Цена, пока жетонов нет</span><span class="v">' + money(v.price) + "</span></div>"),
+    validate: v => (!v.name.trim() ? "Укажи мечту" : validatePositiveMoney(v.price, "Стоимость")),
+    preview: v => '<div class="row"><span class="k">Цена, пока жетонов нет</span><span class="v">' + money(v.price) + "</span></div>",
     submit: v => push({type:"SET_DREAM", playerId:p.id, name:v.name.trim(), price:v.price,
       label:"Мечта: " + v.name.trim() + " за " + money(v.price)})
   });
@@ -493,6 +525,7 @@ function actFTDream(p){
   openForm({
     title: "Купить свою Мечту", ok: "Купить",
     intro: "Покупка своей Мечты — это победа.",
+    validate: () => p.cash < price ? "Наличными не хватает — кредит на дорожке недоступен." : null,
     preview: () =>
       '<div class="row"><span class="k">' + esc(p.dream.name) + "</span><span class=\"v\"></span></div>" +
       '<div class="row"><span class="k">Первоначальная стоимость</span><span class="v">' + money(p.dream.base) + "</span></div>" +

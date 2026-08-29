@@ -95,6 +95,20 @@ function apply(state, ev){
     return;
   }
 
+  /* Рыночное дробление относится к бумаге, а не к отдельной записи игрока.
+     Старое SPLIT ниже оставлено для точного воспроизведения старых журналов. */
+  if(ev.type === "MARKET_SPLIT"){
+    const ratio = Number(ev.ratio);
+    if(!ev.symbol || !Number.isFinite(ratio) || ratio <= 0) return;
+    state.players.forEach(player => player.stocks.forEach(h => {
+      if(h.symbol === ev.symbol){
+        h.qty *= ratio;
+        h.price /= ratio;
+      }
+    }));
+    return;
+  }
+
   const p = state.players.find(x => x.id === ev.playerId);
   if(!p) return;
 
