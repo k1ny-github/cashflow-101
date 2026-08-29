@@ -124,12 +124,18 @@ Commit: `fix: закрыть ошибки расчётов Cashflow 101`
 **Files:**
 - Create: `game-config.js`
 - Create: `tests/config.test.js`
+- Modify: `save.js`
+- Modify: `tests/save.test.js`
+- Modify: `engine.js`
 - Modify: `index.html`
 - Modify: `ui.js`
 
 **Interfaces:**
 - Produces: `createGameConfig(mode, input)`, `is202(config)`, `optionRoundLimit(config)`.
-- Extends `ADD_PLAYER` with `initialPortfolio: {cash, stocks, properties, otherAssets, otherLiabilities}`.
+- Extends `ADD_PLAYER` with an atomic snapshot of profession, selected Dream and
+  `initialPortfolio: {cash, stocks, properties, otherAssets, otherLiabilities}`.
+- Extends `GameSaveV2` with temporary `setupPortfolio` while keeping the same
+  localStorage key and `schemaVersion: 2`.
 
 - [ ] **Step 1: Write failing configuration tests**
 
@@ -149,9 +155,23 @@ The selector locks after the first `ADD_PLAYER` event. Existing games show 101 w
 
 - [ ] **Step 4: Add the Cashflow 202 initial-portfolio setup step**
 
-The step supports repeated stock and real-estate rows. The engine expands the
-portfolio atomically when applying `ADD_PLAYER`; cash is included in starting
-cash, and portfolio cashflow is included before calculating starting cash.
+The step appears only in 202 and supports repeated stock, real-estate/business,
+other-asset and other-liability rows. Stock fields are symbol, quantity, price
+and dividend. Property fields are name, price, down payment, explicit mortgage
+and monthly cashflow. Other assets contain name, cost and monthly income; other
+liabilities contain name, balance and monthly expense.
+
+The engine expands the portfolio atomically when applying `ADD_PLAYER`; all
+created holdings carry `source:"initial-portfolio"`. No purchase events are
+created for these entries. The card's down payment is recorded as invested
+capital and is not deducted from cash a second time. Mortgage defaults to
+`price - down`, but an explicitly entered mortgage is authoritative. Negative
+starting-asset cashflow is valid and must not be clamped.
+
+Starting cash equals profession cashflow after adding portfolio income and
+portfolio expenses, plus profession savings and portfolio cash. The complete
+profession snapshot, portfolio and selected Dream are stored in the single
+`ADD_PLAYER` event.
 
 ```js
 test("202 starting cash includes portfolio cash and passive income", () => {
@@ -163,9 +183,21 @@ test("202 starting cash includes portfolio cash and passive income", () => {
 });
 ```
 
-- [ ] **Step 5: Render the active mode in the header/menu**
+Add tests for negative portfolio cashflow, an explicit mortgage differing
+from `price - down`, other assets/liabilities, source tags, atomic Dream and
+the absence of purchase events.
 
-- [ ] **Step 6: Run tests and commit**
+- [ ] **Step 5: Make the setup draft lossless and reload-safe**
+
+Update portfolio cash on every `input`, read it directly from the field again
+immediately before adding the player, and save the draft after every change.
+Changing profession must preserve a non-empty portfolio unless the user
+explicitly confirms clearing it. Reload/import/export retain `mode`,
+`settings`, `events`, `current` and temporary `setupPortfolio`.
+
+- [ ] **Step 6: Render the active mode in the header/menu**
+
+- [ ] **Step 7: Run tests and commit**
 
 Commit: `feat: добавить режимы 101 и 202`
 
@@ -223,7 +255,7 @@ Commit: `feat: добавить опционы и короткие позици�
 
 **Interfaces:**
 - Produces: `d2yIncome(cards)`, `splitLand(asset, acresSold, salePrice)`, `insuranceExpense(player)`.
-- New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`.
+- New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`, `UPDATE_OWNED_CARD`.
 
 - [ ] **Step 1: Write failing tests for real-estate option priority and expiry**
 
@@ -243,6 +275,14 @@ test("D2Y 3 pays only with 1 and at least one 2", () => {
 - [ ] **Step 5: Implement the asset calculations and events**
 
 - [ ] **Step 6: Add focused UI forms and report rows**
+
+У каждой принадлежащей игроку карточки актива есть действие `Изменить`.
+Для недвижимости и бизнеса редактируются название, цена, первый взнос,
+ипотека и денежный поток; для акций — символ, количество, цена и дивиденд;
+для прочих активов и пассивов — их финансовые поля. Изменение хранится
+отдельным событием `UPDATE_OWNED_CARD`, поэтому удаление этой строки журнала
+возвращает прежние данные. Биржевые опционы, шорты и срок их действия через
+эту общую форму не редактируются — для них остаются специализированные действия.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -278,6 +318,10 @@ Neither +50,000 alone nor dreams alone wins. +50,000 plus own dream wins; +50,00
 - [ ] **Step 4: Implement the pure calculations and events**
 
 - [ ] **Step 5: Add Fast Track UI for unselected dreams, resale and franchise**
+
+`Купить мечту` opens a first choice between `Моя мечта` and `Другая мечта`.
+Other Dreams are stored as a list; the same board field cannot be sold twice,
+and buying more than two distinct other Dreams remains allowed.
 
 - [ ] **Step 6: Run tests and commit**
 
