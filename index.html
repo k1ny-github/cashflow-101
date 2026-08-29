@@ -87,6 +87,17 @@ button{font:inherit;color:inherit;cursor:pointer}
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .badge{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:var(--card)}
 
+.tools202-title{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.tools202-empty{padding:12px 0;text-align:left}
+.instrument{border:1px solid var(--line);border-radius:12px;padding:11px;margin:9px 0;background:var(--bg)}
+.instrument.good{border-color:var(--good);background:var(--good-bg)}
+.instrument.warn{border-color:var(--warn);background:var(--warn-bg)}
+.instrument.bad{border-color:var(--bad);background:var(--bad-bg)}
+.instrument-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.instrument-head span{font-size:12px;color:var(--muted)}
+.instrument-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+.instrument-actions .btn{padding:7px 11px}
+
 .log{list-style:none;margin:0;padding:0}
 .log li{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
@@ -223,6 +234,7 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 <dialog id="dlg"><div class="dlg" id="dlg-body"></div></dialog>
 <script src="professions.js?v=4"></script>
 <script src="game-config.js?v=4"></script>
+<script src="market202.js?v=4"></script>
 <script src="engine.js?v=4"></script>
 <script src="save.js?v=4"></script>
 <script src="ui.js?v=4"></script>

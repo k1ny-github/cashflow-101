@@ -24,6 +24,8 @@ function blankPlayer(id, name, prof){
     children: 0,
     cash: 0,
     stocks: [],   // {id, symbol, qty, price, div}
+    options: [],  // {id, type, symbol, qty, strike, premiumPerShare, premiumTotal, remaining}
+    shorts: [],   // {id, symbol, qty, openPrice, proceedsEnvelope, mustClose, closePrice}
     props:  [],   // {id, name, kind, down, price, mortgage, cashflow}
     otherAssets: [],       // {id, name, cost, income}
     otherLiabilities: [],  // {id, name, balance, expense}
@@ -137,7 +139,23 @@ function liftoff(passive){ return Math.round(passive / 1000) * 1000 * 100; }
 
 /* ---------- применение одного события ---------- */
 
-function apply(state, ev){
+function configuredOptionRounds(config, ev){
+  const recorded = Number(ev.remaining);
+  if(Number.isInteger(recorded) && recorded >= 1) return recorded;
+  return typeof optionRoundLimit === "function" ? optionRoundLimit(config) : 3;
+}
+
+function valid202PositionEvent(ev, config){
+  if(!ev.symbol || !validateLot(ev.qty, config?.settings?.strictLots === true)) return false;
+  return config?.mode !== "202-standard" || ev.symbol === "OK4U" || ev.symbol === "MYT4U";
+}
+
+function adjustedQuantity(qty, ratio){
+  const next = qty * ratio;
+  return ratio < 1 ? Math.floor(next) : next;
+}
+
+function apply(state, ev, config){
   if(ev.type === "ADD_PLAYER"){
     const prof = ev.profession && ev.profession.id === ev.professionId
       ? ev.profession
@@ -153,6 +171,53 @@ function apply(state, ev){
     return;
   }
 
+  /* Старый OPTION_ROUND снимал один тур сразу у всех опционов. Новые игры
+     используют ADJUST_OPTION_ROUNDS для одной карточки, но старые журналы
+     должны воспроизводиться без изменений. */
+  if(ev.type === "OPTION_ROUND"){
+    state.players.forEach(player => {
+      player.options = player.options.filter(option => {
+        const remaining = Number.isFinite(Number(option.remaining)) ? Number(option.remaining) : 3;
+        if(remaining <= 1) return false;
+        option.remaining = remaining - 1;
+        return true;
+      });
+    });
+    return;
+  }
+
+  if(ev.type === "MARKET_PRICE"){
+    const price = Number(ev.price);
+    if(!ev.symbol || !Number.isFinite(price) || price < 0) return;
+    state.marketPrices[ev.symbol] = price;
+    state.players.forEach(player => player.shorts.forEach(position => {
+      if(position.symbol === ev.symbol && !position.mustClose){
+        position.mustClose = true;
+        position.closePrice = price;
+      }
+    }));
+    return;
+  }
+
+  if(ev.type === "COMPANY_BANKRUPTCY"){
+    if(!ev.symbol) return;
+    state.marketPrices[ev.symbol] = 0;
+    state.players.forEach(player => {
+      player.stocks = player.stocks.filter(stock => stock.symbol !== ev.symbol);
+      player.options = player.options.filter(option => {
+        if(option.symbol !== ev.symbol) return true;
+        if(option.remaining > 0 && option.type === "put") player.cash += optionPayout(option, 0);
+        return false;
+      });
+      player.shorts = player.shorts.filter(position => {
+        if(position.symbol !== ev.symbol) return true;
+        player.cash += shortResult(position, 0);
+        return false;
+      });
+    });
+    return;
+  }
+
   /* Рыночное дробление относится к бумаге, а не к отдельной записи игрока.
      Старое SPLIT ниже оставлено для точного воспроизведения старых журналов. */
   if(ev.type === "MARKET_SPLIT"){
@@ -161,13 +226,32 @@ function apply(state, ev){
     state.players.forEach(player => {
       player.stocks.forEach(h => {
         if(h.symbol === ev.symbol){
-          const nextQty = h.qty * ratio;
-          h.qty = ratio < 1 ? Math.floor(nextQty) : nextQty;
+          h.qty = adjustedQuantity(h.qty, ratio);
           h.price /= ratio;
         }
       });
       player.stocks = player.stocks.filter(h => h.symbol !== ev.symbol || h.qty > 0);
+      player.options.forEach(option => {
+        if(option.symbol === ev.symbol){
+          option.qty = adjustedQuantity(option.qty, ratio);
+          option.strike /= ratio;
+          option.premiumPerShare /= ratio;
+        }
+      });
+      player.options = player.options.filter(option => option.symbol !== ev.symbol || option.qty > 0);
+      player.shorts.forEach(position => {
+        if(position.symbol === ev.symbol){
+          position.qty = adjustedQuantity(position.qty, ratio);
+          position.openPrice /= ratio;
+          position.proceedsEnvelope = position.qty * position.openPrice;
+          if(position.mustClose) position.closePrice /= ratio;
+        }
+      });
+      player.shorts = player.shorts.filter(position => position.symbol !== ev.symbol || position.qty > 0);
     });
+    if(Object.prototype.hasOwnProperty.call(state.marketPrices, ev.symbol)){
+      state.marketPrices[ev.symbol] /= ratio;
+    }
     return;
   }
 
@@ -184,6 +268,67 @@ function apply(state, ev){
       p.cash -= ev.price * ev.qty;
       p.stocks.push({id: ev.assetId, symbol: ev.symbol, qty: ev.qty, price: ev.price, div: ev.div});
       return;
+
+    case "BUY_OPTION": {
+      const legacy = ev.premium !== undefined && ev.premiumPerShare === undefined && ev.premiumTotal === undefined;
+      if((!legacy && p.ft) || (!legacy && !valid202PositionEvent(ev, config))) return;
+      const qty = Number(ev.qty);
+      const strike = Number(ev.strike);
+      if(!ev.symbol || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(strike) || strike <= 0) return;
+      const premiumTotal = legacy ? finiteNumber(ev.premium) :
+        finiteNumber(ev.premiumTotal === undefined ? qty * finiteNumber(ev.premiumPerShare) : ev.premiumTotal);
+      const premiumPerShare = legacy ? premiumTotal / qty : finiteNumber(ev.premiumPerShare);
+      p.options.push({
+        id:ev.optionId, type:ev.optionType || ev.typeOpt || "call", symbol:ev.symbol,
+        qty, strike, premiumPerShare, premiumTotal,
+        remaining:configuredOptionRounds(config, ev), active:true, sourceMode:ev.sourceMode || config?.mode
+      });
+      p.cash -= premiumTotal;
+      return;
+    }
+
+    case "ADJUST_OPTION_ROUNDS": {
+      const option = p.options.find(item => item.id === ev.optionId);
+      const delta = Number(ev.delta);
+      if(!option || !Number.isInteger(delta) || delta === 0) return;
+      option.remaining = Math.max(0, option.remaining + delta);
+      option.active = option.remaining > 0;
+      return;
+    }
+
+    case "EXERCISE_OPTION": {
+      const option = p.options.find(item => item.id === ev.optionId);
+      if(!option || option.remaining <= 0 || option.active === false) return;
+      const recorded = Number(ev.marketPrice);
+      const marketPrice = Number.isFinite(recorded) ? recorded : state.marketPrices[option.symbol];
+      if(!Number.isFinite(marketPrice)) return;
+      p.cash += optionPayout(option, marketPrice);
+      p.options = p.options.filter(item => item.id !== option.id);
+      return;
+    }
+
+    case "OPEN_SHORT": {
+      if(!valid202PositionEvent(ev, config)) return;
+      const qty = Number(ev.qty);
+      const openPrice = Number(ev.openPrice);
+      if(!Number.isFinite(openPrice) || openPrice <= 0) return;
+      p.shorts.push({
+        id:ev.shortId, symbol:ev.symbol, qty, openPrice,
+        proceedsEnvelope:qty * openPrice, mustClose:false, closePrice:null
+      });
+      return;
+    }
+
+    case "CLOSE_SHORT": {
+      const position = p.shorts.find(item => item.id === ev.shortId);
+      if(!position) return;
+      const recorded = Number(ev.marketPrice);
+      const marketPrice = position.mustClose ? position.closePrice : recorded;
+      if(!Number.isFinite(marketPrice)) return;
+      p.cash += shortResult(position, marketPrice);
+      p.shorts = p.shorts.filter(item => item.id !== position.id);
+      return;
+    }
 
     case "SELL_STOCK": {
       const h = p.stocks.find(x => x.id === ev.assetId);
@@ -328,10 +473,10 @@ function apply(state, ev){
   }
 }
 
-function reduceEvents(events){
-  const state = {players: []};
+function reduceEvents(events, config){
+  const state = {players: [], marketPrices:{}};
   for(const ev of events){
-    try { apply(state, ev); } catch(e){ /* битое событие пропускаем, партия не падает */ }
+    try { apply(state, ev, config); } catch(e){ /* битое событие пропускаем, партия не падает */ }
   }
   return state;
 }
@@ -339,6 +484,14 @@ function reduceEvents(events){
 /* Предупреждения по игроку: что приложение обязано заметить само. */
 function warnings(p){
   const out = [];
+  const mandatoryShorts = (p.shorts || []).filter(position => position.mustClose);
+  mandatoryShorts.forEach(position => {
+    const result = shortResult(position, position.closePrice);
+    const cover = result < 0 && p.cash + result < 0
+      ? " Продай активы или объяви личное банкротство; банковский кредит для убытка по шорту недоступен."
+      : "";
+    out.push({level:"bad", text:"Короткая позиция " + position.symbol + " должна быть закрыта: " + result + " $" + cover});
+  });
   if(p.ft){
     const f = deriveFT(p);
     if(f.won) out.push({level:"good", text:

@@ -226,7 +226,7 @@ function prepareImportedGame(raw){
 }
 
 function recompute(){
-  S = reduceEvents(G.events);
+  S = reduceEvents(G.events, G);
   if(!S.players.some(p => p.id === G.current)) G.current = S.players.length ? S.players[0].id : null;
   G.screen = S.players.length ? (G.screen === "setup" ? "table" : G.screen) : "setup";
 }
@@ -578,6 +578,224 @@ function actRepay(p){
   });
 }
 
+function marketSymbol(value){ return String(value || "").trim().toUpperCase(); }
+
+function validate202Symbol(symbol){
+  if(!symbol) return "Укажи тикер";
+  if(G.mode === "202-standard" && symbol !== "OK4U" && symbol !== "MYT4U"){
+    return "В Standard доступны только OK4U и MYT4U";
+  }
+  return null;
+}
+
+function positionSymbolField(){
+  return G.mode === "202-standard"
+    ? {k:"symbol", type:"select", label:"Тикер", options:[
+      {v:"OK4U", t:"OK4U"}, {v:"MYT4U", t:"MYT4U"}
+    ]}
+    : {k:"symbol", type:"text", label:"Тикер", placeholder:"OK4U"};
+}
+
+function confirmCustomLot(qty){
+  if(G.mode !== "202-custom" || validateLot(qty, true)) return true;
+  return confirm("Объём " + qty + " не соответствует стандартному лоту 100–5000 с шагом 100. Подтвердить нестандартный лот Custom?");
+}
+
+function actBuyOption(p){
+  if(!is202(G)){ alert("Биржевые опционы доступны только в Cashflow 202."); return; }
+  if(p.ft){ alert("Новый опцион нельзя открыть на скоростной дорожке."); return; }
+  const rounds = optionRoundLimit(G);
+  openForm({
+    title:"Купить биржевой опцион", ok:"Купить",
+    intro:"Премия указана за одну акцию и оплачивается один раз. При исполнении выплачивается только внутренняя стоимость.",
+    fields:[
+      {k:"optionType", type:"select", label:"Тип", options:[
+        {v:"call", t:"Call — рост"}, {v:"put", t:"Put — падение"}
+      ]},
+      positionSymbolField(),
+      {k:"strike", label:"Страйк, $ за акцию", value:0},
+      {k:"premiumPerShare", label:"Премия, $ за акцию", value:0},
+      {k:"qty", label:"Количество акций", value:100, step:100,
+        hint:G.mode === "202-standard" ? "От 100 до 5000, шаг 100." : "Нестандартный лот потребует подтверждения."}
+    ],
+    validate:v => {
+      const symbol = marketSymbol(v.symbol);
+      const strict = G.settings.strictLots === true;
+      return validate202Symbol(symbol) ||
+        validatePositiveMoney(v.strike, "Страйк") ||
+        validatePositiveMoney(v.premiumPerShare, "Премия", true) ||
+        (!validateLot(v.qty, strict) ? (strict
+          ? "В Standard количество должно быть от 100 до 5000 с шагом 100"
+          : "Количество должно быть положительным целым числом") : null) ||
+        validateAvailableCash(p, v.qty * v.premiumPerShare);
+    },
+    preview:v => {
+      const total = v.qty * v.premiumPerShare;
+      return '<div class="row"><span class="k">Премия всего</span><span class="v">' +
+        v.qty + " × " + money(v.premiumPerShare) + " = " + money(total) + "</span></div>" +
+        '<div class="row"><span class="k">Срок</span><span class="v">' + rounds + " тур.</span></div>" +
+        deltaPreview(p, -total, 0);
+    },
+    submit:v => {
+      if(!confirmCustomLot(v.qty)) return;
+      const symbol = marketSymbol(v.symbol);
+      const premiumTotal = v.qty * v.premiumPerShare;
+      push({type:"BUY_OPTION", playerId:p.id, optionId:uid(), optionType:v.optionType,
+        symbol, strike:v.strike, premiumPerShare:v.premiumPerShare, premiumTotal,
+        qty:v.qty, remaining:rounds, sourceMode:G.mode,
+        nonstandardLotConfirmed:!validateLot(v.qty, true),
+        label:"Куплен " + v.optionType.toUpperCase() + " " + symbol + " × " + v.qty +
+          ", премия " + money(premiumTotal)});
+    }
+  });
+}
+
+function actAdjustOption(p, option, delta){
+  push({type:"ADJUST_OPTION_ROUNDS", playerId:p.id, optionId:option.id, delta,
+    label:(delta < 0 ? "−1 тур: " : "+1 тур: ") + option.type.toUpperCase() + " " + option.symbol});
+}
+
+function actExerciseOption(p, option){
+  const price = S.marketPrices[option.symbol];
+  const payout = optionPayout(option, price);
+  if(!Number.isFinite(price)){ alert("Сначала запиши рыночную цену " + option.symbol + "."); return; }
+  if(payout <= 0){ alert("Опцион пока не приносит выплату. Можно ждать до следующей цены или последнего тура."); return; }
+  openForm({
+    title:"Исполнить " + option.type.toUpperCase() + " " + option.symbol, ok:"Исполнить",
+    intro:"Премия уже уплачена и повторно не вычитается.",
+    preview:() => '<div class="row"><span class="k">Рыночная цена</span><span class="v">' + money(price) +
+      '</span></div><div class="row total"><span class="k">Выплата</span><span class="v pos">' +
+      money(payout) + "</span></div>" + deltaPreview(p, payout, 0),
+    submit:() => push({type:"EXERCISE_OPTION", playerId:p.id, optionId:option.id, marketPrice:price,
+      label:"Исполнен " + option.type.toUpperCase() + " " + option.symbol + ": " + signed(payout)})
+  });
+}
+
+function actOpenShort(p){
+  if(!is202(G) || p.ft){ alert("Короткую позицию можно открыть только в Cashflow 202 на Крысиных бегах."); return; }
+  openForm({
+    title:"Открыть короткую позицию", ok:"Открыть",
+    intro:"Выручка останется в банковском конверте и не увеличит свободные наличные. Следующая цена этой акции потребует закрытия.",
+    fields:[positionSymbolField(),
+      {k:"openPrice", label:"Цена продажи, $ за акцию", value:0},
+      {k:"qty", label:"Количество акций", value:100, step:100,
+        hint:G.mode === "202-standard" ? "От 100 до 5000, шаг 100." : "Нестандартный лот потребует подтверждения."}
+    ],
+    validate:v => validate202Symbol(marketSymbol(v.symbol)) ||
+      validatePositiveMoney(v.openPrice, "Цена продажи") ||
+      (!validateLot(v.qty, G.settings.strictLots === true) ? (G.settings.strictLots
+        ? "В Standard количество должно быть от 100 до 5000 с шагом 100"
+        : "Количество должно быть положительным целым числом") : null),
+    preview:v => '<div class="row"><span class="k">Банковский конверт</span><span class="v">' +
+      money(v.qty * v.openPrice) + '</span></div><div class="row"><span class="k">Свободные наличные</span><span class="v">без изменений</span></div>',
+    submit:v => {
+      if(!confirmCustomLot(v.qty)) return;
+      const symbol = marketSymbol(v.symbol);
+      push({type:"OPEN_SHORT", playerId:p.id, shortId:uid(), symbol, qty:v.qty, openPrice:v.openPrice,
+        nonstandardLotConfirmed:!validateLot(v.qty, true),
+        label:"Открыт шорт " + symbol + " × " + v.qty + " по " + money(v.openPrice)});
+    }
+  });
+}
+
+function actCloseShort(p, position){
+  const price = position.mustClose ? position.closePrice : S.marketPrices[position.symbol];
+  const result = shortResult(position, price);
+  openForm({
+    title:"Закрыть шорт " + position.symbol, ok:"Закрыть",
+    intro:position.mustClose ? "Закрытие обязательно по первой появившейся цене." : "Закрытие короткой позиции.",
+    validate:() => result < 0 && p.cash + result < 0
+      ? "Наличных не хватает: продай активы или объяви личное банкротство. Банковский заём здесь недоступен."
+      : null,
+    preview:() => '<div class="row"><span class="k">Цена открытия → выкупа</span><span class="v">' +
+      money(position.openPrice) + " → " + money(price) + '</span></div><div class="row total"><span class="k">Результат</span><span class="v ' +
+      cls(result) + '">' + signed(result) + '</span></div><div class="row"><span class="k">Наличные</span><span class="v">' +
+      money(p.cash) + " → <b class=\"" + cls(p.cash + result) + "\">" + money(p.cash + result) + "</b></span></div>" +
+      (result < 0 && p.cash + result < 0
+        ? '<div class="row"><span class="k neg">Продай активы или объяви личное банкротство</span><span class="v"></span></div>'
+        : ""),
+    submit:() => push({type:"CLOSE_SHORT", playerId:p.id, shortId:position.id, marketPrice:price,
+      label:"Закрыт шорт " + position.symbol + ": " + signed(result)})
+  });
+}
+
+function pendingShortFor(symbol){
+  return S.players.some(owner => owner.shorts.some(position => position.symbol === symbol && position.mustClose));
+}
+
+function marketAffectedPreview(effects){
+  let html = '<div class="row"><span class="k">Затронуто игроков</span><span class="v">' +
+    effects.affectedPlayers.length + "</span></div>";
+  effects.affectedPlayers.forEach(affected => {
+    html += '<div class="row"><span class="k">' + esc(affected.playerName) + '</span><span class="v">акции ' +
+      affected.stocks + " · опционы " + affected.options + " · шорты " + affected.shorts + "</span></div>";
+  });
+  effects.options.forEach(option => {
+    html += '<div class="row"><span class="k">' + esc(option.playerName) + " · " + option.type.toUpperCase() +
+      '</span><span class="v ' + cls(option.payout) + '">' + money(option.payout) + "</span></div>";
+  });
+  effects.shorts.forEach(position => {
+    html += '<div class="row"><span class="k">' + esc(position.playerName) + " · шорт" +
+      '</span><span class="v ' + cls(position.result) + '">' + signed(position.result) + "</span></div>";
+  });
+  return html;
+}
+
+function actMarket202(p){
+  openForm({
+    title:"Рынок 202", ok:"Записать событие",
+    intro:"Цена, дробление и банкротство компании действуют на всех игроков.",
+    fields:[
+      {k:"operation", type:"select", label:"Событие", options:[
+        {v:"price", t:"Новая рыночная цена"},
+        {v:"split", t:"Сплит 2:1"},
+        {v:"reverse", t:"Обратный сплит 1:2"},
+        {v:"bankruptcy", t:"Банкротство компании"}
+      ]},
+      positionSymbolField(),
+      {k:"price", label:"Новая цена, $ за акцию", value:0,
+        hint:"Для дробления и банкротства поле не используется."}
+    ],
+    validate:v => {
+      const symbol = marketSymbol(v.symbol);
+      return validate202Symbol(symbol) ||
+        (v.operation === "price" ? validatePositiveMoney(v.price, "Рыночная цена") : null) ||
+        (v.operation === "price" && pendingShortFor(symbol)
+          ? "Сначала закрой обязательные короткие позиции по предыдущей цене " + symbol
+          : null);
+    },
+    preview:v => {
+      const symbol = marketSymbol(v.symbol);
+      const price = v.operation === "bankruptcy" ? 0 : v.price;
+      const effects = marketEffects(S, symbol, price);
+      let html = marketAffectedPreview(effects);
+      if(v.operation === "reverse"){
+        html += '<div class="row"><span class="k">Нечётные количества</span><span class="v">округляются вниз</span></div>';
+      }
+      if(v.operation === "price" && effects.shorts.length){
+        html += '<div class="row"><span class="k neg">Шорты</span><span class="v neg">потребуют закрытия</span></div>';
+      }
+      return html;
+    },
+    submit:v => {
+      const symbol = marketSymbol(v.symbol);
+      if(v.operation === "bankruptcy"){
+        const affected = marketEffects(S, symbol, 0).affectedPlayers.map(item => item.playerName).join(", ") || "никого";
+        if(!confirm("Банкротство " + symbol + " затронет: " + affected + ". Акции и коллы обнулятся, путы и шорты рассчитаются по цене $0. Продолжить?")) return;
+        push({type:"COMPANY_BANKRUPTCY", playerId:p.id, symbol,
+          label:"Банкротство компании " + symbol});
+      } else if(v.operation === "price"){
+        push({type:"MARKET_PRICE", playerId:p.id, symbol, price:v.price,
+          label:"Новая цена " + symbol + ": " + money(v.price)});
+      } else {
+        const ratio = v.operation === "split" ? 2 : 0.5;
+        push({type:"MARKET_SPLIT", playerId:p.id, symbol, ratio,
+          label:(ratio === 2 ? "Сплит 2:1 — " : "Обратный сплит 1:2 — ") + symbol});
+      }
+    }
+  });
+}
+
 function actCash(p, dir){
   const inc = dir === "in";
   openForm({
@@ -840,6 +1058,65 @@ function reportFT(p){
   return h;
 }
 
+function render202Tools(p){
+  if(!is202(G)) return "";
+  let html = '<div class="sub tools202-title">Инструменты 202</div>';
+  if(!p.options.length && !p.shorts.length){
+    return html + '<div class="empty tools202-empty">Открытых биржевых опционов и коротких позиций нет.</div>';
+  }
+  p.options.forEach(option => {
+    const price = S.marketPrices[option.symbol];
+    const payout = Number.isFinite(price) ? optionPayout(option, price) : 0;
+    const tone = option.remaining <= 0 ? " bad" : payout > 0 ? " good" : option.remaining === 1 ? " warn" : "";
+    html += '<div class="instrument' + tone + '"><div class="instrument-head"><b>' +
+      esc(option.type.toUpperCase() + " · " + option.symbol) + '</b><span>' + option.remaining +
+      ' тур.</span></div><div class="row"><span class="k">Страйк · количество</span><span class="v">' +
+      money(option.strike) + " · " + option.qty + '</span></div><div class="row"><span class="k">Премия за акцию · всего</span><span class="v">' +
+      money(option.premiumPerShare) + " · " + money(option.premiumTotal) + "</span></div>" +
+      (Number.isFinite(price) ? '<div class="row"><span class="k">Рынок · выплата</span><span class="v ' + cls(payout) + '">' +
+        money(price) + " · " + money(payout) + "</span></div>" : "") +
+      '<div class="instrument-actions"><button class="btn" data-option-minus="' + esc(option.id) + '"' +
+      (option.remaining <= 0 ? " disabled" : "") + ">−1</button>" +
+      '<button class="btn" data-option-plus="' + esc(option.id) + '">+1</button>' +
+      (Number.isFinite(price) ? '<button class="btn primary" data-option-exercise="' + esc(option.id) + '"' +
+        (payout <= 0 || option.remaining <= 0 ? " disabled" : "") + ">" +
+        (option.remaining <= 0 ? "Истёк" : payout > 0 ? "Исполнить " + signed(payout) : "Ждать") + "</button>" : "") +
+      "</div></div>";
+  });
+  p.shorts.forEach(position => {
+    const result = position.mustClose ? shortResult(position, position.closePrice) : null;
+    html += '<div class="instrument' + (position.mustClose ? " bad" : "") +
+      '"><div class="instrument-head"><b>Шорт · ' + esc(position.symbol) + '</b><span>' +
+      (position.mustClose ? "закрыть сейчас" : "открыт") + '</span></div><div class="row"><span class="k">Цена входа · количество</span><span class="v">' +
+      money(position.openPrice) + " · " + position.qty + '</span></div><div class="row"><span class="k">Банковский конверт</span><span class="v">' +
+      money(position.proceedsEnvelope) + "</span></div>" +
+      (position.mustClose ? '<div class="row"><span class="k">Обязательный выкуп · результат</span><span class="v ' + cls(result) + '">' +
+        money(position.closePrice) + " · " + signed(result) + "</span></div>" : "") +
+      '<div class="instrument-actions"><button class="btn ' + (position.mustClose ? "danger" : "") +
+      '" data-short-close="' + esc(position.id) + '">' + (position.mustClose ? "Подтвердить закрытие" : "Закрыть") + "</button></div></div>";
+  });
+  return html;
+}
+
+function bind202Tools(p){
+  $("#report").querySelectorAll("[data-option-minus]").forEach(button => button.onclick = () => {
+    const option = p.options.find(item => item.id === button.dataset.optionMinus);
+    if(option) actAdjustOption(p, option, -1);
+  });
+  $("#report").querySelectorAll("[data-option-plus]").forEach(button => button.onclick = () => {
+    const option = p.options.find(item => item.id === button.dataset.optionPlus);
+    if(option) actAdjustOption(p, option, 1);
+  });
+  $("#report").querySelectorAll("[data-option-exercise]").forEach(button => button.onclick = () => {
+    const option = p.options.find(item => item.id === button.dataset.optionExercise);
+    if(option) actExerciseOption(p, option);
+  });
+  $("#report").querySelectorAll("[data-short-close]").forEach(button => button.onclick = () => {
+    const position = p.shorts.find(item => item.id === button.dataset.shortClose);
+    if(position) actCloseShort(p, position);
+  });
+}
+
 function renderTable(){
   const p = player();
   if(!p) return;
@@ -908,6 +1185,13 @@ function renderTable(){
     ["➖","Разовый расход", () => actCash(p, "out")],
     ["✏️","Моя мечта", () => actSetDream(p)]
   ];
+  if(is202(G)){
+    if(!ft){
+      acts.push(["🎯","Купить опцион", () => actBuyOption(p)]);
+      acts.push(["📉","Открыть шорт", () => actOpenShort(p)]);
+    }
+    acts.push(["🌐","Рынок 202", () => actMarket202(p)]);
+  }
   if(!ft && d.canEscape) acts.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
 
   $("#acts").innerHTML = acts.map((a, i) =>
@@ -915,7 +1199,8 @@ function renderTable(){
   $("#acts").querySelectorAll("[data-a]").forEach(el =>
     el.onclick = () => acts[Number(el.dataset.a)][2]());
 
-  $("#report").innerHTML = "<h2>Финансовый отчёт</h2>" + (ft ? reportFT(p) : reportRatRace(p));
+  $("#report").innerHTML = "<h2>Финансовый отчёт</h2>" + (ft ? reportFT(p) : reportRatRace(p)) + render202Tools(p);
+  bind202Tools(p);
 }
 
 function renderLog(){
