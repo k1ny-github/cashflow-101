@@ -24,6 +24,7 @@ function loadEngine(){
   runFile(context, "game-config.js");
   runFile(context, "professions.js");
   runFile(context, "market202.js");
+  runFile(context, "fast-track202.js");
   runFile(context, "engine.js");
   vm.runInContext(
     "globalThis.engine202 = { reduceEvents, createGameConfig, optionRoundLimit };",
@@ -44,6 +45,7 @@ function loadUI(){
   runFile(context, "save.js");
   runFile(context, "professions.js");
   runFile(context, "market202.js");
+  runFile(context, "fast-track202.js");
   runFile(context, "engine.js");
   runFile(context, "ui.js");
   vm.runInContext(

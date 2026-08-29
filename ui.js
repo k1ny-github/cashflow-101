@@ -897,6 +897,7 @@ function actFTPayday(p){
 }
 
 function actFTBiz(p){
+  const official202 = is202(G);
   openForm({
     title: "Инвестиция в бизнес",
     fields: [
@@ -911,8 +912,9 @@ function actFTBiz(p){
       validatePositiveMoney(v.down, "Первый взнос", true) ||
       validatePositiveMoney(v.mortgage, "Ипотека", true) ||
       validatePositiveMoney(v.cashflow, "Денежный поток", true) ||
-      (p.cash < v.down ? "Наличными не хватает — кредит на дорожке недоступен." : null)),
-    preview: v => deltaPreview(p, -v.down, v.cashflow),
+      (p.cash < (official202 ? v.price : v.down)
+        ? "Наличными не хватает — кредит на дорожке недоступен." : null)),
+    preview: v => deltaPreview(p, -(official202 ? v.price : v.down), v.cashflow),
     submit: v => push({type:"FT_BUY_BIZ", playerId:p.id, assetId:uid(),
       name:v.name.trim(), price:v.price, down:v.down, mortgage:v.mortgage, cashflow:v.cashflow,
       label:"Бизнес на дорожке: " + v.name.trim() + " (" + signed(v.cashflow) + "/мес)"})
@@ -921,15 +923,27 @@ function actFTBiz(p){
 
 function actFTCharity(p){
   if(p.ft.charity){ alert("Благотворительность уже действует до конца игры."); return; }
+  const official202 = is202(G);
+  const fixedAmount = 100000;
   openForm({
     title: "Благотворительность",
     intro: "Не обязательна. Действует до конца игры: на каждом ходу выбираешь, кидать одну, две или три кости.",
-    fields: [{k:"amount", label:"Сумма с карточки, $", value:100000, step:1000}],
-    validate: v => validatePositiveMoney(v.amount, "Сумма") ||
-      (p.cash < v.amount ? "Наличными не хватает — кредит на дорожке недоступен." : null),
-    preview: v => deltaPreview(p, -v.amount, 0),
-    submit: v => push({type:"FT_CHARITY", playerId:p.id, amount:v.amount,
-      label:"Благотворительность на дорожке " + money(-v.amount) + " — 1–3 кости до конца игры"})
+    fields: official202
+      ? [{k:"dice", type:"select", label:"Костей на этом ходу", options:[
+          {v:1, t:"1 кость"}, {v:2, t:"2 кости"}, {v:3, t:"3 кости"}
+        ]}]
+      : [{k:"amount", label:"Сумма с карточки, $", value:fixedAmount, step:1000}],
+    validate: v => official202
+      ? (p.cash < fixedAmount ? "Наличными не хватает — кредит на дорожке недоступен." : null)
+      : validatePositiveMoney(v.amount, "Сумма") ||
+        (p.cash < v.amount ? "Наличными не хватает — кредит на дорожке недоступен." : null),
+    preview: v => deltaPreview(p, -(official202 ? fixedAmount : v.amount), 0),
+    submit: v => {
+      const amount = official202 ? fixedAmount : v.amount;
+      push({type:"FT_CHARITY", playerId:p.id, amount,
+        ...(official202 ? {dice:Number(v.dice)} : {}),
+        label:"Благотворительность на дорожке " + money(-amount) + " — 1–3 кости до конца игры"});
+    }
   });
 }
 
@@ -975,6 +989,58 @@ function actDreamToken(p){
 }
 
 function actFTDream(p){
+  if(is202(G)){
+    const unavailable = new Set();
+    const selectedNames = new Set();
+    S.players.forEach(player => {
+      if(player.dream){
+        unavailable.add(String(player.dream.fieldId || player.dream.name));
+        selectedNames.add(String(player.dream.name).trim());
+      }
+      (player.otherDreams || []).forEach(dream =>
+        unavailable.add(String(dream.fieldId || dream.id || dream.name)));
+    });
+    openForm({
+      title:"Купить мечту",
+      ok:"Купить",
+      intro:"Сначала выбери свою Мечту или свободное невыбранное поле Мечты.",
+      fields:[
+        {k:"kind", type:"select", label:"Какую Мечту", options:[
+          {v:"own", t:"Моя мечта"}, {v:"other", t:"Другая мечта"}
+        ]},
+        {k:"fieldId", type:"text", label:"Номер / ID другого поля"},
+        {k:"name", type:"text", label:"Название другой Мечты"},
+        {k:"price", label:"Цена другой Мечты, $", value:0, step:1000}
+      ],
+      validate:v => {
+        if(v.kind === "own"){
+          if(!p.dream) return "Своя Мечта не выбрана.";
+          if(p.dream.bought) return "Своя Мечта уже куплена.";
+          return validateAvailableCash(p, dreamPrice(p));
+        }
+        const fieldId = v.fieldId.trim();
+        if(!fieldId) return "Укажи номер или ID поля Мечты.";
+        if(unavailable.has(fieldId)) return "Это поле Мечты уже выбрано или продано.";
+        if(!v.name.trim()) return "Укажи название Мечты.";
+        if(selectedNames.has(v.name.trim())) return "Эта Мечта уже выбрана игроком и не продаётся.";
+        return validatePositiveMoney(v.price, "Цена") || validateAvailableCash(p, v.price);
+      },
+      preview:v => v.kind === "own"
+        ? (p.dream ? deltaPreview(p, -dreamPrice(p), 0) : "")
+        : deltaPreview(p, -v.price, 0),
+      submit:v => {
+        if(v.kind === "own"){
+          push({type:"FT_DREAM", playerId:p.id,
+            label:"Куплена своя Мечта «" + p.dream.name + "» за " + money(dreamPrice(p))});
+          return;
+        }
+        push({type:"FT_BUY_OTHER_DREAM", playerId:p.id, fieldId:v.fieldId.trim(),
+          name:v.name.trim(), price:v.price,
+          label:"Куплена другая Мечта «" + v.name.trim() + "» за " + money(v.price)});
+      }
+    });
+    return;
+  }
   if(!p.dream){ actSetDream(p); return; }
   if(p.dream.bought){ alert("Мечта уже куплена."); return; }
   const price = dreamPrice(p);
@@ -1103,8 +1169,15 @@ function reportFT(p){
     '</span><span class="v">' + v + (action || "") + "</span></div>";
   let h = '<div class="sub">Доход в День CASHFLOW</div>';
   h += row("Начальный пассивный доход", money(p.ft.startIncome));
-  p.ft.businesses.forEach(b => h += row(esc(b.name), signed(b.cashflow) + " · цена " + money(b.price) +
-    " · взнос " + money(b.down) + " · ипотека " + money(b.mortgage), "", edit("ftBusiness", b.id)));
+  p.ft.businesses.forEach(b => {
+    const details = is202(G)
+      ? signed(b.cashflow) + " · базовая цена " + money(b.basePrice ?? b.price) +
+        " · Жетонов владения: " + (b.ownershipTokens || 1) +
+        " · Франшиз: " + (Array.isArray(b.franchises) ? b.franchises.length : 0)
+      : signed(b.cashflow) + " · цена " + money(b.price) +
+        " · взнос " + money(b.down) + " · ипотека " + money(b.mortgage);
+    h += row(esc(b.name), details, "", edit("ftBusiness", b.id));
+  });
   p.otherExpenses.filter(item => item.active).forEach(item => h += row(esc(item.name), money(-item.amount) + "/мес", "",
     edit("otherExpense", item.id) + ' <button class="btn danger" data-end-expense="' + esc(item.id) + '">Завершить</button>'));
   h += row("Итого доход", money(f.income), " total");
@@ -1117,10 +1190,15 @@ function reportFT(p){
     h += row("Первоначальная стоимость", money(p.dream.base));
     h += row("Чужих жетонов", String(p.dream.tokens));
   }
+  if(Array.isArray(p.otherDreams) && p.otherDreams.length){
+    h += '<div class="sub">Другие Мечты</div>';
+    p.otherDreams.forEach(dream => h += row(esc(dream.name), money(dream.price)));
+  }
   return h;
 }
 
 function renderCardCounters(p){
+  if(p.ft && is202(G)) return "";
   let html = '<div class="sub tools202-title">Счётчики карточек</div>';
   if(!p.cardCounters.length) return html + '<div class="empty tools202-empty">Счётчиков пока нет.</div>';
   p.cardCounters.forEach(counter => {
@@ -1135,7 +1213,7 @@ function renderCardCounters(p){
 }
 
 function render202Tools(p){
-  if(!is202(G)) return "";
+  if(!is202(G) || p.ft) return "";
   const forcedShortClose = S.players.some(owner => lockedShorts(owner).length);
   let html = '<div class="sub tools202-title">Инструменты 202</div>';
   p.d2yCards.forEach(card => {
@@ -1208,6 +1286,80 @@ function bind202Tools(p){
   $("#report").querySelectorAll("[data-short-close]").forEach(button => button.onclick = () => {
     const position = p.shorts.find(item => item.id === button.dataset.shortClose);
     if(position) actCloseShort(p, position);
+  });
+}
+
+function transferableFastTrackBusinesses(p){
+  const out = [];
+  S.players.forEach(owner => {
+    if(owner.id === p.id || !owner.ft) return;
+    owner.ft.businesses.forEach(business => {
+      const ownershipTokens = Math.max(1, Number(business.ownershipTokens || business.tokens || 1)) + 1;
+      const price = fastTrackBusinessPrice({...business, ownershipTokens});
+      out.push({owner, business, price});
+    });
+  });
+  return out;
+}
+
+function actFTTransferBusiness(p){
+  const businesses = transferableFastTrackBusinesses(p);
+  if(!businesses.length){ alert("У других игроков нет бизнеса для обязательного выкупа."); return; }
+  openForm({
+    title:"Выкупить бизнес игрока",
+    ok:"Передать бизнес",
+    intro:"При попадании на чужой бизнес передача обязательна. Цена учитывает новый жетон владения.",
+    fields:[{k:"business", type:"select", label:"Бизнес", options:businesses.map((item, index) => ({
+      v:String(index), t:item.owner.name + " · " + item.business.name + " · " + money(item.price)
+    }))}],
+    validate:v => {
+      const item = businesses[Number(v.business)];
+      return !item ? "Выбери бизнес" : validateAvailableCash(p, item.price);
+    },
+    preview:v => {
+      const item = businesses[Number(v.business)];
+      if(!item) return "";
+      return '<div class="row"><span class="k">Жетонов владения станет</span><span class="v">' +
+        (Math.max(1, Number(item.business.ownershipTokens || item.business.tokens || 1)) + 1) +
+        '</span></div>' + deltaPreview(p, -item.price, 0);
+    },
+    submit:v => {
+      const item = businesses[Number(v.business)];
+      if(!item) return;
+      push({type:"FT_TRANSFER_BUSINESS", playerId:p.id, fromPlayerId:item.owner.id,
+        businessId:item.business.id, landingId:uid(),
+        label:"Обязательный выкуп бизнеса «" + item.business.name + "» у " + item.owner.name +
+          " за " + money(item.price)});
+    }
+  });
+}
+
+function actFTFranchise(p){
+  if(!p.ft.businesses.length){ alert("Сначала купи бизнес на Скоростной дорожке."); return; }
+  openForm({
+    title:"Добавить франшизу",
+    ok:"Добавить",
+    intro:"Повторное попадание владельца добавляет не больше одной франшизы за это попадание.",
+    fields:[{k:"business", type:"select", label:"Свой бизнес", options:p.ft.businesses.map((business, index) => ({
+      v:String(index), t:business.name + " · " + money(business.basePrice ?? business.price)
+    }))}],
+    validate:v => {
+      const business = p.ft.businesses[Number(v.business)];
+      return !business ? "Выбери бизнес" : validateAvailableCash(p, business.basePrice ?? business.price);
+    },
+    preview:v => {
+      const business = p.ft.businesses[Number(v.business)];
+      if(!business) return "";
+      const price = business.basePrice ?? business.price;
+      const flow = business.baseCashflow ?? business.cashflow;
+      return deltaPreview(p, -price, flow);
+    },
+    submit:v => {
+      const business = p.ft.businesses[Number(v.business)];
+      if(!business) return;
+      push({type:"FT_ADD_FRANCHISE", playerId:p.id, businessId:business.id, landingId:uid(),
+        label:"Франшиза бизнеса «" + business.name + "»"});
+    }
   });
 }
 
@@ -1607,6 +1759,17 @@ function tableActions(p, ft, d){
     ["➖","Прочий расход", () => actOtherExpense(p)],
     ["✏️","Моя мечта", () => actSetDream(p)]
   ];
+  if(ft && is202(G)){
+    const dreamAction = actions.find(action => action[1] === "Купить свою Мечту");
+    if(dreamAction) dreamAction[1] = "Купить мечту";
+    const businessAction = actions.find(action => action[1] === "Купить бизнес");
+    const insertAt = businessAction ? actions.indexOf(businessAction) + 1 : 1;
+    actions.splice(insertAt, 0,
+      ["🔄","Выкупить бизнес", () => actFTTransferBusiness(p)],
+      ["🏪","Добавить франшизу", () => actFTFranchise(p)]);
+    const counters = actions.find(action => action[1] === "Счётчики карточек");
+    if(counters) actions.splice(actions.indexOf(counters), 1);
+  }
   if(is202(G)){
     if(!ft){
       const propertyAction = actions.find(action => action[1] === "Недвижимость");
@@ -1632,12 +1795,14 @@ function tableActions(p, ft, d){
       actions.push(["🏗","Операции с недвижимостью", () => actProperty202(p)]);
       actions.push(["🤝","Сделка с игроком", () => actTransfer202(p)]);
     }
-    actions.push(["🌐","Рынок 202", () => actMarket202(p)]);
+    if(!ft) actions.push(["🌐","Рынок 202", () => actMarket202(p)]);
   }
   if(!ft && d.cashflow < 0 && p.cash + d.cashflow < 0){
     actions.push(["⚠️","Личное банкротство", () => actBankruptcy(p, is202(G) ? "202" : "101"), true]);
   }
-  if(!ft && d.canEscape) actions.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
+  if(!ft && (is202(G) ? canEscape202(d) : d.canEscape)){
+    actions.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
+  }
   return actions;
 }
 

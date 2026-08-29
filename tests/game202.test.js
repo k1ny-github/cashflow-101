@@ -8,6 +8,7 @@ function loadEngine(){
   const context = {};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "professions.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "fast-track202.js"), "utf8"), context);
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, "..", "engine.js"), "utf8") +
       "\nglobalThis.engine202 = { reduceEvents, derive, PROFESSIONS };",
@@ -28,6 +29,7 @@ function loadSetupUI(){
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "game-config.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "save.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "professions.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "fast-track202.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "engine.js"), "utf8"), context);
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, "..", "ui.js"), "utf8") +

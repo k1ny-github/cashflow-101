@@ -18,6 +18,7 @@ function loadEngine(){
   runFile(context, "professions.js");
   runFile(context, "market202.js");
   runFile(context, "assets202.js");
+  runFile(context, "fast-track202.js");
   runFile(context, "engine.js");
   vm.runInContext(
     "globalThis.task5Engine = {" +
@@ -45,6 +46,7 @@ function loadUI(){
   runFile(context, "professions.js");
   runFile(context, "market202.js");
   runFile(context, "assets202.js");
+  runFile(context, "fast-track202.js");
   runFile(context, "engine.js");
   runFile(context, "ui.js");
   vm.runInContext(
