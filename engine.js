@@ -104,6 +104,10 @@ function finiteNumber(value){
   return Number.isFinite(number) ? number : 0;
 }
 
+function otherAssetKind(value){
+  return value === "royalty" ? "royalty" : "other";
+}
+
 function applyInitialPortfolio(p, portfolio){
   if(!portfolio || typeof portfolio !== "object") return;
   const source = "initial-portfolio";
@@ -139,7 +143,7 @@ function applyInitialPortfolio(p, portfolio){
     name: asset.name,
     cost: finiteNumber(asset.cost),
     income: finiteNumber(asset.income),
-    kind: asset.kind || "royalty",
+    kind: otherAssetKind(asset.kind),
     source
   }));
   p.otherLiabilities = (Array.isArray(portfolio.otherLiabilities) ? portfolio.otherLiabilities : []).map((liability, index) => ({
@@ -206,10 +210,10 @@ function patchOwnedCard(player, ev){
   const collections = {
     stock:[player.stocks, ["symbol", "qty", "price", "div"]],
     property:[player.props, ["name", "price", "down", "mortgage", "cashflow", "acres", "bookValue"]],
-    otherAsset:[player.otherAssets, ["name", "cost", "income"]],
+    otherAsset:[player.otherAssets, ["name", "kind", "cost", "income"]],
     otherLiability:[player.otherLiabilities, ["name", "balance", "expense"]],
     otherExpense:[player.otherExpenses, ["name", "amount"]],
-    ftBusiness:[player.ft?.businesses || [], ["name", "down", "price", "cashflow"]]
+    ftBusiness:[player.ft?.businesses || [], ["name", "price", "down", "mortgage", "cashflow"]]
   };
   const entry = collections[ev.cardType];
   if(!entry || !ev.patch || typeof ev.patch !== "object") return;
@@ -217,8 +221,8 @@ function patchOwnedCard(player, ev){
   if(!card) return;
   entry[1].forEach(key => {
     if(!Object.prototype.hasOwnProperty.call(ev.patch, key)) return;
-    card[key] = key === "name" || key === "symbol"
-      ? String(ev.patch[key])
+    card[key] = key === "kind" ? otherAssetKind(ev.patch[key])
+      : key === "name" || key === "symbol" ? String(ev.patch[key])
       : finiteNumber(ev.patch[key]);
   });
 }
@@ -269,6 +273,13 @@ function eventAllowedDuringImmediateOption(state, ev){
   if(!pending) return true;
   return ev.type === "RESOLVE_REAL_ESTATE_OPTION" && ev.playerId === pending.owner.id &&
     (ev.optionId || ev.assetId) === pending.option.id;
+}
+
+function addProperty(player, asset){
+  if(!asset || player.cash < asset.down) return false;
+  player.cash -= asset.down;
+  player.props.push({...asset});
+  return true;
 }
 
 function apply(state, ev, config){
@@ -488,6 +499,7 @@ function apply(state, ev, config){
       p.stocks = [];
       p.options = [];
       p.realEstateOptions = [];
+      p.otherAssets = p.otherAssets.filter(asset => asset.kind === "royalty");
       p.skipTurns = Math.max(p.skipTurns, 3);
       p.creditRestricted = true;
       return;
@@ -528,6 +540,8 @@ function apply(state, ev, config){
     case "BUY_PROPERTY": {
       const asset = propertyFromEvent(ev, ev.assetId);
       if(!asset) return;
+      if(allows202Event(config) && asset.kind !== "business" &&
+         (state.pendingRealEstateDeal || oldestRealEstateOption(state))) return;
       p.cash -= asset.down;
       p.props.push(asset);
       return;
@@ -644,6 +658,7 @@ function apply(state, ev, config){
 
     case "BUY_REAL_ESTATE_OPTION":
       if(!allows202Event(config) || !(ev.optionId || ev.assetId) ||
+         state.pendingRealEstateDeal ||
          p.realEstateOptions.some(option => option.id === (ev.optionId || ev.assetId))) return;
       if(p.cash < Math.max(0, finiteNumber(ev.cost ?? ev.price))) return;
       p.cash -= Math.max(0, finiteNumber(ev.cost ?? ev.price));
@@ -651,33 +666,55 @@ function apply(state, ev, config){
       p.realEstateOptions.push({id:ev.optionId || ev.assetId, order:state.realEstateOptionSequence});
       return;
 
+    case "OFFER_REAL_ESTATE": {
+      if(!allows202Event(config) || state.pendingRealEstateDeal || !oldestRealEstateOption(state)) return;
+      const asset = propertyFromEvent(ev.property || ev.asset, ev.dealId || ev.assetId);
+      const dealId = ev.dealId || asset?.id;
+      if(!asset || !asset.id || !dealId) return;
+      state.pendingRealEstateDeal = {
+        id:dealId,
+        originalPlayerId:p.id,
+        property:{...asset}
+      };
+      return;
+    }
+
     case "RESOLVE_REAL_ESTATE_OPTION": {
       if(!allows202Event(config)) return;
       const optionId = ev.optionId || ev.assetId;
       const action = ev.action || ev.decision;
-      const pending = oldestRealEstateOption(state);
-      if(!pending || pending.owner.id !== p.id || pending.option.id !== optionId) return;
+      const pendingOption = oldestRealEstateOption(state);
+      const pendingDeal = state.pendingRealEstateDeal;
+      if(!pendingDeal || !pendingOption || pendingOption.owner.id !== p.id ||
+         pendingOption.option.id !== optionId) return;
       if(action === "refuse" || action === "decline"){
         p.realEstateOptions = p.realEstateOptions.filter(option => option.id !== optionId);
         return;
       }
-      const propertyEvent = ev.property || ev.asset || ev;
-      const asset = propertyFromEvent(propertyEvent, propertyEvent.assetId);
-      if(!asset) return;
+      const asset = pendingDeal.property;
       if(action === "buy"){
-        if(p.cash < asset.down) return;
-        p.cash -= asset.down;
-        p.props.push(asset);
-      } else if(action === "sell"){
+        if(!addProperty(p, asset)) return;
+        p.realEstateOptions = p.realEstateOptions.filter(option => option.id !== optionId);
+        state.pendingRealEstateDeal = null;
+      } else if(action === "transfer" || action === "sell"){
         const buyer = state.players.find(player => player.id === (ev.buyerId || ev.toPlayerId) && player.id !== p.id);
         if(!buyer) return;
         const salePrice = Math.max(0, finiteNumber(ev.salePrice));
-        if(buyer.cash < salePrice + asset.down) return;
+        if(buyer.cash < salePrice || buyer.realEstateOptions.some(option => option.id === optionId)) return;
         p.cash += salePrice;
-        buyer.cash -= salePrice + asset.down;
-        buyer.props.push(asset);
+        buyer.cash -= salePrice;
+        p.realEstateOptions = p.realEstateOptions.filter(option => option.id !== optionId);
+        buyer.realEstateOptions.push({...pendingOption.option, mustUseImmediately:true});
       } else return;
-      p.realEstateOptions = p.realEstateOptions.filter(option => option.id !== optionId);
+      return;
+    }
+
+    case "CONTINUE_REAL_ESTATE_DEAL": {
+      if(!allows202Event(config)) return;
+      const pendingDeal = state.pendingRealEstateDeal;
+      if(!pendingDeal || pendingDeal.originalPlayerId !== p.id ||
+         (ev.dealId && ev.dealId !== pendingDeal.id) || oldestRealEstateOption(state)) return;
+      if(addProperty(p, pendingDeal.property)) state.pendingRealEstateDeal = null;
       return;
     }
 
@@ -698,13 +735,13 @@ function apply(state, ev, config){
           buyer.props.push({...asset, ...(jointId ? {jointId} : {})});
         }
       } else if(assetType === "royalty"){
-        asset = p.otherAssets.find(item => item.id === ev.assetId);
+        asset = p.otherAssets.find(item => item.id === ev.assetId && item.kind === "royalty");
         if(asset) p.otherAssets = p.otherAssets.filter(item => item.id !== asset.id);
         if(asset) buyer.otherAssets.push({...asset});
       } else if(assetType === "realEstateOption" || assetType === "real-estate-option"){
         const oldest = oldestRealEstateOption(state);
         asset = p.realEstateOptions.find(item => item.id === ev.assetId);
-        if(asset && oldest?.option.id === asset.id){
+        if(state.pendingRealEstateDeal && asset && oldest?.option.id === asset.id){
           p.realEstateOptions = p.realEstateOptions.filter(item => item.id !== asset.id);
           buyer.realEstateOptions.push({...asset, mustUseImmediately:true});
         } else asset = null;
@@ -778,11 +815,22 @@ function apply(state, ev, config){
       if(p.ft) p.cash += deriveFT(p).income;
       return;
 
-    case "FT_BUY_BIZ":
+    case "FT_BUY_BIZ": {
       if(!p.ft) return;
-      p.cash -= ev.down;
-      p.ft.businesses.push({id: ev.assetId, name: ev.name, down: ev.down, cashflow: ev.cashflow});
+      const down = finiteNumber(ev.down);
+      const price = ev.price === undefined ? down : finiteNumber(ev.price);
+      const mortgage = ev.mortgage === undefined ? Math.max(0, price - down) : finiteNumber(ev.mortgage);
+      p.cash -= down;
+      p.ft.businesses.push({
+        id:ev.assetId,
+        name:String(ev.name || "Бизнес"),
+        price,
+        down,
+        mortgage,
+        cashflow:finiteNumber(ev.cashflow)
+      });
       return;
+    }
 
     /* Благотворительность на дорожке: не обязательна, действует до конца
        игры — можно выбрасывать одну, две или три кости (стр. 12). */
@@ -821,7 +869,7 @@ function apply(state, ev, config){
 }
 
 function reduceEvents(events, config){
-  const state = {players: [], marketPrices:{}, realEstateOptionSequence:0};
+  const state = {players: [], marketPrices:{}, realEstateOptionSequence:0, pendingRealEstateDeal:null};
   for(const ev of events){
     try { apply(state, ev, config); } catch(e){ /* битое событие пропускаем, партия не падает */ }
   }
