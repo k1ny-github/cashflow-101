@@ -20,6 +20,24 @@ test("custom 202 save uses safe custom settings", () => {
   assert.deepEqual(save.settings, {optionRounds: 3, strictLots: false});
 });
 
+test("custom 202 save falls back for infinite option rounds", () => {
+  const save = normalizeGameSave({
+    mode: "202-custom",
+    settings: {optionRounds: Infinity}
+  });
+
+  assert.equal(save.settings.optionRounds, 3);
+});
+
+test("custom 202 save falls back for fractional option rounds", () => {
+  const save = normalizeGameSave({
+    mode: "202-custom",
+    settings: {optionRounds: 2.5}
+  });
+
+  assert.equal(save.settings.optionRounds, 3);
+});
+
 test("serializes the normalized game save", () => {
   const { serializeGameSave } = require("../save");
 
