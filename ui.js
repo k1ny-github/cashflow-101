@@ -11,7 +11,7 @@ const KEY = "cashflow-bankir-v1";
    показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
 const APP_VERSION = "4 — 24 августа 2026";
 
-let G = { events: [], current: null, screen: "setup" };
+let G = { mode: "101", settings: {optionRounds:3, strictLots:false}, events: [], current: null, screen: "setup" };
 let S = { players: [] };            // производное состояние
 
 /* ---------- мелочи ---------- */
@@ -36,15 +36,15 @@ function player(){ return S.players.find(p => p.id === G.current) || null; }
 /* ---------- хранение ---------- */
 
 function save(){
-  try { localStorage.setItem(KEY, JSON.stringify({events: G.events, current: G.current})); }
+  try { localStorage.setItem(KEY, serializeGameSave(G)); }
   catch(e){ /* приватный режим — играем без автосохранения */ }
 }
 function load(){
   try {
     const raw = localStorage.getItem(KEY);
     if(!raw) return;
-    const d = JSON.parse(raw);
-    if(Array.isArray(d.events)){ G.events = d.events; G.current = d.current || null; }
+    const d = normalizeGameSave(JSON.parse(raw));
+    G = {...d, screen: G.screen};
   } catch(e){ /* битое сохранение игнорируем */ }
 }
 
@@ -738,7 +738,7 @@ function menu(){
         return;
       }
       if(v.a === "export"){
-        const blob = new Blob([JSON.stringify({events:G.events}, null, 2)], {type:"application/json"});
+        const blob = new Blob([serializeGameSave(G)], {type:"application/json"});
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = "cashflow-partiya.json";
@@ -751,9 +751,8 @@ function menu(){
           const r = new FileReader();
           r.onload = () => {
             try {
-              const d = JSON.parse(r.result);
-              if(!Array.isArray(d.events)) throw 0;
-              G.events = d.events; G.current = null; G.screen = "table";
+              const d = normalizeGameSave(JSON.parse(r.result));
+              G = {...d, current: null, screen: "table"};
               save(); recompute(); render();
             } catch(e){ alert("Не похоже на файл партии."); }
           };
@@ -762,7 +761,7 @@ function menu(){
         inp.click();
       } else if(v.a === "reset"){
         if(!confirm("Стереть партию и начать заново?")) return;
-        G = {events:[], current:null, screen:"setup"};
+        G = {mode:"101", settings:{optionRounds:3, strictLots:false}, events:[], current:null, screen:"setup"};
         save(); recompute(); render();
       }
     }
