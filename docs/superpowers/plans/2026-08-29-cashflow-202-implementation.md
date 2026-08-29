@@ -288,6 +288,12 @@ Commit: `feat: добавить опционы и короткие позици�
 - Produces: `d2yIncome(cards)`, `splitLand(asset, acresSold, salePrice)`, `insuranceExpense(player)`.
 - New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`, `UPDATE_OWNED_CARD`.
 - Cross-mode expense events: `ADD_OTHER_EXPENSE`, `END_OTHER_EXPENSE`.
+- Cross-mode counter events: `ADD_CARD_COUNTER`, `ADJUST_CARD_COUNTER`;
+  legacy `TICK_CHARITY` and `TICK_SKIP` remain replay-only.
+- Cross-mode cash-loss event: `LOSE_CASH_SHARE`; legacy `FT_LOSE` remains
+  replay-only.
+- Cross-mode correction event: `REMOVE_CHILD`; legacy `CHILD` remains the add
+  event and is replayed unchanged.
 
 - [ ] **Step 1: Write failing tests for real-estate option priority and expiry**
 
@@ -316,6 +322,14 @@ Also test `Прочий расход`: `once` reduces cash exactly once, while `
 creates a named recurring expense that reduces every derived monthly cashflow
 without an immediate duplicate cash charge. Ending the recurring expense is a
 separate reversible journal event.
+Add tests for a generic card counter and per-counter `-1`/`+1` adjustments:
+only the selected counter changes, zero is expired, and deleting the latest
+adjustment event restores the preceding remainder.
+Test the official Downsized interaction explicitly: it sets two skipped turns
+and immediately zeroes any remaining Rat Race charity turns. Add cash-loss
+tests for `half` and `all` in both 101 and 202 without bank borrowing.
+Test that `REMOVE_CHILD` decrements the child count and child expenses, never
+goes below zero, and is undone by deleting that journal event.
 
 - [ ] **Step 4: Write failing tests for 202 bankruptcy restrictions**
 
@@ -347,6 +361,21 @@ The `Прочий расход` form is available in both 101 and 202 and asks w
 expense is one-time or monthly. A monthly expense appears as its own report
 row, can be edited as an owned expense card, and can be ended without deleting
 its history; deleting the end event restores it.
+
+Add a compact `Счётчики карточек` section in both modes with presets for
+Благотворительность, Увольнение/пропуск, Стихийное бедствие and a custom name.
+Each counter has remaining turns and separate `−1` / `+1` controls. One turn
+is yellow and zero is red/expired. Existing legacy charity/skip state remains
+visible and keeps its old event semantics.
+
+Both modes expose `Развод — потерять все наличные` and one combined action
+`Налоги / Суд — потерять половину наличных`. The same actions are available on
+the Rat Race and Fast Track; they use `LOSE_CASH_SHARE`, while old `FT_LOSE`
+events keep replaying unchanged.
+
+The Rat Race `Ребёнок` action offers `Добавить` or `Убрать`. Removing writes a
+separate `REMOVE_CHILD` event, immediately recalculates child expenses and is
+disabled at zero children.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -431,6 +460,7 @@ being swallowed silently.
 - [ ] **Step 3: Verify all forms at 375px viewport**
 
 Check setup, option cards, market modal, short close, property option, D2Y and Fast Track victory without clipped controls or horizontal scrolling.
+Also check multiple card counters with independent `−1`/`+1` buttons.
 
 Cashflow 101 hides every 202 control. The header updates mode immediately.
 Before each financial operation show resulting cash and monthly-flow change;
