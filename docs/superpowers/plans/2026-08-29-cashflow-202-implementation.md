@@ -129,6 +129,7 @@ Commit: `fix: закрыть ошибки расчётов Cashflow 101`
 
 **Interfaces:**
 - Produces: `createGameConfig(mode, input)`, `is202(config)`, `optionRoundLimit(config)`.
+- Extends `ADD_PLAYER` with `initialPortfolio: {cash, stocks, properties, otherAssets, otherLiabilities}`.
 
 - [ ] **Step 1: Write failing configuration tests**
 
@@ -146,9 +147,25 @@ test("standard is fixed at three strict rounds", () => {
 
 The selector locks after the first `ADD_PLAYER` event. Existing games show 101 without prompting.
 
-- [ ] **Step 4: Render the active mode in the header/menu**
+- [ ] **Step 4: Add the Cashflow 202 initial-portfolio setup step**
 
-- [ ] **Step 5: Run tests and commit**
+The step supports repeated stock and real-estate rows. The engine expands the
+portfolio atomically when applying `ADD_PLAYER`; cash is included in starting
+cash, and portfolio cashflow is included before calculating starting cash.
+
+```js
+test("202 starting cash includes portfolio cash and passive income", () => {
+  const p = game202([{type:"ADD_PLAYER", playerId:"p", professionId:"nurse",
+    initialPortfolio:{cash:500, stocks:[], properties:[
+      {name:"Дом", price:65000, down:8000, mortgage:57000, cashflow:300}
+    ]}}]).players[0];
+  assert.equal(p.cash, 2400); // 1120 + 300 cashflow + 480 savings + 500 cash
+});
+```
+
+- [ ] **Step 5: Render the active mode in the header/menu**
+
+- [ ] **Step 6: Run tests and commit**
 
 Commit: `feat: добавить режимы 101 и 202`
 
