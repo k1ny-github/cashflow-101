@@ -100,12 +100,16 @@ function apply(state, ev){
   if(ev.type === "MARKET_SPLIT"){
     const ratio = Number(ev.ratio);
     if(!ev.symbol || !Number.isFinite(ratio) || ratio <= 0) return;
-    state.players.forEach(player => player.stocks.forEach(h => {
-      if(h.symbol === ev.symbol){
-        h.qty *= ratio;
-        h.price /= ratio;
-      }
-    }));
+    state.players.forEach(player => {
+      player.stocks.forEach(h => {
+        if(h.symbol === ev.symbol){
+          const nextQty = h.qty * ratio;
+          h.qty = ratio < 1 ? Math.floor(nextQty) : nextQty;
+          h.price /= ratio;
+        }
+      });
+      player.stocks = player.stocks.filter(h => h.symbol !== ev.symbol || h.qty > 0);
+    });
     return;
   }
 

@@ -38,6 +38,13 @@ function validatePositiveMoney(value, label, allowZero){
   return null;
 }
 
+function validateAvailableCash(p, amount){
+  if(p.cash >= amount) return null;
+  return p.ft
+    ? "Наличными не хватает — кредит на дорожке недоступен."
+    : "Наличными не хватает — сначала возьми кредит.";
+}
+
 function player(){ return S.players.find(p => p.id === G.current) || null; }
 
 /* ---------- хранение ---------- */
@@ -151,7 +158,10 @@ function deltaPreview(p, dCash, dFlow){
       '</span><span class="v">' + money(before) + " → <b class=\"" + cls(after) + "\">" + money(after) + "</b></span></div>";
   }
   if(p.cash + dCash < 0){
-    h += '<div class="row"><span class="k" style="color:var(--bad)">Наличных не хватает — понадобится кредит</span><span class="v"></span></div>';
+    const hint = p.ft
+      ? "Наличных не хватает — операция на дорожке недоступна"
+      : "Наличных не хватает — понадобится кредит";
+    h += '<div class="row"><span class="k" style="color:var(--bad)">' + hint + '</span><span class="v"></span></div>';
   }
   return h;
 }
@@ -285,7 +295,8 @@ function actSplit(p){
         return '<div class="row"><span class="k">Затронуто пакетов</span><span class="v">' +
           holdings.length + "</span></div>" + holdings.map(h =>
             '<div class="row"><span class="k">Станет</span><span class="v">' +
-            h.qty * ratio + " шт по " + money(h.price / ratio) + "</span></div>"
+            (ratio < 1 ? Math.floor(h.qty * ratio) : h.qty * ratio) +
+            " шт по " + money(h.price / ratio) + "</span></div>"
           ).join("");
       },
       submit: v => {
@@ -304,7 +315,8 @@ function actDoodad(p){
       {k:"title", type:"text", label:"Что купили", placeholder:"Новый катер"},
       {k:"amount", label:"Сумма, $", value:0}
     ],
-    validate: v => validatePositiveMoney(v.amount, "Сумма"),
+    validate: v => validatePositiveMoney(v.amount, "Сумма") ||
+      validateAvailableCash(p, v.amount),
     preview: v => deltaPreview(p, -v.amount, 0),
     submit: v => push({type:"DOODAD", playerId:p.id, amount:v.amount,
       label:"Всякая всячина: " + (v.title.trim() || "трата") + " " + money(-v.amount)})
@@ -411,7 +423,8 @@ function actCash(p, dir){
       {k:"title", type:"text", label:"Описание", placeholder: inc ? "Продажа права на сделку" : "Прочее"},
       {k:"amount", label:"Сумма, $", value:0}
     ],
-    validate: v => validatePositiveMoney(v.amount, "Сумма"),
+    validate: v => validatePositiveMoney(v.amount, "Сумма") ||
+      (!inc ? validateAvailableCash(p, v.amount) : null),
     preview: v => deltaPreview(p, inc ? v.amount : -v.amount, 0),
     submit: v => push({type: inc ? "CASH_IN" : "CASH_OUT", playerId:p.id, amount:v.amount,
       label:(v.title.trim() || (inc ? "Разовый доход" : "Разовый расход")) + " " +
