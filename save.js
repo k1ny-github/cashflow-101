@@ -1,16 +1,27 @@
 (function(root){
   function normalizeGameSave(raw){
-    const mode = ["101","202-standard","202-custom"].includes(raw && raw.mode) ? raw.mode : "101";
-    const optionRounds = Number(raw?.settings?.optionRounds);
-    return {
+    const fallbackConfig = (mode, input) => {
+      const selected = ["101", "202-standard", "202-custom"].includes(mode) ? mode : "101";
+      const rounds = Number(input?.optionRounds);
+      return {
+        mode: selected,
+        settings: selected === "202-custom"
+          ? {optionRounds: Number.isInteger(rounds) && rounds >= 1 ? rounds : 3, strictLots:false}
+          : {optionRounds:3, strictLots:selected === "202-standard"}
+      };
+    };
+    const config = (root.createGameConfig || fallbackConfig)(raw?.mode, raw?.settings);
+    const save = {
       schemaVersion: 2,
-      mode,
-      settings: mode === "202-custom"
-        ? {optionRounds: Number.isFinite(optionRounds) && Number.isInteger(optionRounds) && optionRounds >= 1 ? optionRounds : 3, strictLots:false}
-        : {optionRounds:3, strictLots:mode === "202-standard"},
+      mode: config.mode,
+      settings: config.settings,
       events: Array.isArray(raw?.events) ? raw.events : [],
       current: raw?.current || null
     };
+    if(Object.prototype.hasOwnProperty.call(raw || {}, "setupPortfolio")){
+      save.setupPortfolio = raw.setupPortfolio;
+    }
+    return save;
   }
 
   function serializeGameSave(game){

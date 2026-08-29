@@ -138,6 +138,20 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
       а стартовые наличные банк выдаст по правилам: месячный денежный поток плюс сбережения.
     </p>
     <div class="f">
+      <label for="np-mode">Режим партии</label>
+      <select id="np-mode">
+        <option value="101">Cashflow 101</option>
+        <option value="202-standard">Cashflow 202 Standard</option>
+        <option value="202-custom">Cashflow 202 Custom</option>
+      </select>
+      <div class="hint" id="np-mode-hint"></div>
+    </div>
+    <div class="f hide" id="np-rounds-wrap">
+      <label for="np-rounds">Срок опциона, туров</label>
+      <input id="np-rounds" type="number" min="1" step="1" inputmode="numeric" value="3">
+      <div class="hint">В Custom можно выбрать любое целое число от 1.</div>
+    </div>
+    <div class="f">
       <label for="np-name">Имя игрока</label>
       <input id="np-name" type="text" placeholder="Например, Марк" autocomplete="off">
     </div>
@@ -145,6 +159,33 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
       <label for="np-prof">Профессия</label>
       <select id="np-prof"></select>
       <div class="hint" id="np-hint"></div>
+    </div>
+    <div id="np-portfolio" class="hide">
+      <div class="sub">Начальный инвестиционный портфель 202</div>
+      <div class="f">
+        <label for="np-portfolio-cash">Дополнительные наличные с карточки, $</label>
+        <input id="np-portfolio-cash" type="number" min="0" step="1" inputmode="numeric" value="0">
+      </div>
+      <div class="f">
+        <label for="np-dream-name">Мечта с розового поля</label>
+        <input id="np-dream-name" type="text" placeholder="Кругосветное путешествие">
+      </div>
+      <div class="f">
+        <label for="np-dream-price">Первоначальная стоимость мечты, $</label>
+        <input id="np-dream-price" type="number" min="1" step="1000" inputmode="numeric" value="">
+      </div>
+      <div class="sub">Акции</div>
+      <div id="np-stocks"></div>
+      <button class="btn" type="button" data-add-portfolio="stocks">+ Добавить пакет акций</button>
+      <div class="sub">Недвижимость и бизнес</div>
+      <div id="np-properties"></div>
+      <button class="btn" type="button" data-add-portfolio="properties">+ Добавить объект</button>
+      <div class="sub">Прочие активы</div>
+      <div id="np-other-assets"></div>
+      <button class="btn" type="button" data-add-portfolio="otherAssets">+ Добавить актив</button>
+      <div class="sub">Прочие пассивы</div>
+      <div id="np-other-liabilities"></div>
+      <button class="btn" type="button" data-add-portfolio="otherLiabilities">+ Добавить пассив</button>
     </div>
     <button class="btn primary" id="np-add" style="width:100%;padding:13px">Добавить игрока</button>
   </div>
@@ -181,6 +222,7 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 
 <dialog id="dlg"><div class="dlg" id="dlg-body"></div></dialog>
 <script src="professions.js?v=4"></script>
+<script src="game-config.js?v=4"></script>
 <script src="engine.js?v=4"></script>
 <script src="save.js?v=4"></script>
 <script src="ui.js?v=4"></script>

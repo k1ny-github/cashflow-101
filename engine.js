@@ -25,6 +25,8 @@ function blankPlayer(id, name, prof){
     cash: 0,
     stocks: [],   // {id, symbol, qty, price, div}
     props:  [],   // {id, name, kind, down, price, mortgage, cashflow}
+    otherAssets: [],       // {id, name, cost, income}
+    otherLiabilities: [],  // {id, name, balance, expense}
     charityTurns: 0,
     skipTurns: 0,
     dream: null,  // {name, base, tokens, bought} — выбирается в начале партии
@@ -36,18 +38,20 @@ function blankPlayer(id, name, prof){
 function derive(p){
   const dividends = p.stocks.reduce((s,h) => s + h.qty * h.div, 0);
   const realty    = p.props.reduce((s,a) => s + a.cashflow, 0);
-  const passive   = dividends + realty;
+  const otherIncome = p.otherAssets.reduce((s,a) => s + a.income, 0);
+  const otherExpenses = p.otherLiabilities.reduce((s,l) => s + l.expense, 0);
+  const passive   = dividends + realty + otherIncome;
   const totalIncome = p.salary + passive;
 
   const childExp = p.children * p.perChild;
   const bankPay  = p.bankLoan * 0.1;   // только проценты, долг не уменьшают
   const e = p.expenses;
   const totalExpenses = e.taxes + e.mortgage + e.school + e.car + e.card +
-                        e.retail + e.other + childExp + bankPay;
+                        e.retail + e.other + childExp + bankPay + otherExpenses;
 
   return {
-    dividends, realty, passive, totalIncome,
-    childExp, bankPay, totalExpenses,
+    dividends, realty, otherIncome, passive, totalIncome,
+    childExp, bankPay, otherExpenses, totalExpenses,
     cashflow: totalIncome - totalExpenses,
     canEscape: passive > totalExpenses
   };
@@ -79,6 +83,54 @@ function dreamPrice(p){
 /* Стартовые наличные: месячный денежный поток плюс сбережения (правила, стр. 2). */
 function startingCash(p){ return derive(p).cashflow + p.savings; }
 
+function finiteNumber(value){
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function applyInitialPortfolio(p, portfolio){
+  if(!portfolio || typeof portfolio !== "object") return;
+  const source = "initial-portfolio";
+  p.stocks = (Array.isArray(portfolio.stocks) ? portfolio.stocks : []).map((stock, index) => ({
+    id: stock.id || p.id + "-initial-stock-" + index,
+    symbol: stock.symbol,
+    qty: finiteNumber(stock.qty),
+    price: finiteNumber(stock.price),
+    div: finiteNumber(stock.div),
+    source
+  }));
+  p.props = (Array.isArray(portfolio.properties) ? portfolio.properties : []).map((property, index) => {
+    const price = finiteNumber(property.price);
+    const down = finiteNumber(property.down);
+    return {
+      id: property.id || p.id + "-initial-property-" + index,
+      name: property.name,
+      kind: property.kind || "property",
+      price,
+      down,
+      mortgage: property.mortgage === undefined || property.mortgage === ""
+        ? price - down
+        : finiteNumber(property.mortgage),
+      cashflow: finiteNumber(property.cashflow),
+      source
+    };
+  });
+  p.otherAssets = (Array.isArray(portfolio.otherAssets) ? portfolio.otherAssets : []).map((asset, index) => ({
+    id: asset.id || p.id + "-initial-other-asset-" + index,
+    name: asset.name,
+    cost: finiteNumber(asset.cost),
+    income: finiteNumber(asset.income),
+    source
+  }));
+  p.otherLiabilities = (Array.isArray(portfolio.otherLiabilities) ? portfolio.otherLiabilities : []).map((liability, index) => ({
+    id: liability.id || p.id + "-initial-other-liability-" + index,
+    name: liability.name,
+    balance: finiteNumber(liability.balance),
+    expense: finiteNumber(liability.expense),
+    source
+  }));
+}
+
 /* Подъёмные при выходе на дорожку: пассивный доход, округлённый
    до ближайшей тысячи, умноженный на сто (правила, стр. 11). */
 function liftoff(passive){ return Math.round(passive / 1000) * 1000 * 100; }
@@ -87,10 +139,16 @@ function liftoff(passive){ return Math.round(passive / 1000) * 1000 * 100; }
 
 function apply(state, ev){
   if(ev.type === "ADD_PLAYER"){
-    const prof = PROFESSIONS.find(x => x.id === ev.professionId);
+    const prof = ev.profession && ev.profession.id === ev.professionId
+      ? ev.profession
+      : PROFESSIONS.find(x => x.id === ev.professionId);
     if(!prof || state.players.some(x => x.id === ev.playerId)) return;
     const np = blankPlayer(ev.playerId, ev.name, prof);
-    np.cash = startingCash(np);
+    applyInitialPortfolio(np, ev.initialPortfolio);
+    if(ev.dream && ev.dream.name){
+      np.dream = {name: ev.dream.name, base: finiteNumber(ev.dream.price ?? ev.dream.base), tokens:0, bought:false};
+    }
+    np.cash = startingCash(np) + finiteNumber(ev.initialPortfolio?.cash);
     state.players.push(np);
     return;
   }
