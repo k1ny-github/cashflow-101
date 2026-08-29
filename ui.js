@@ -372,6 +372,16 @@ function actBuyStock(p){
 
 function actBuyProp(p, kind){
   const isBiz = kind === "business";
+  const landFields = !isBiz && is202(G) ? [
+    {k:"assetKind", type:"select", label:"Тип объекта", options:[
+      {v:"property", t:"Недвижимость"}, {v:"land", t:"Земельный участок"}
+    ]},
+    {k:"acres", label:"Площадь участка, акров", value:0,
+      hint:"Для обычной недвижимости оставь ноль."},
+    {k:"removeCashflow", type:"select", label:"Поток после продажи части земли", options:[
+      {v:"keep", t:"Сохраняется"}, {v:"remove", t:"Удаляется по карточке"}
+    ]}
+  ] : [];
   openForm({
     title: isBiz ? "Покупка бизнеса" : "Покупка недвижимости",
     intro: "Наличными платится только первый взнос. Выплаты по ипотеке уже сидят в денежном потоке карточки.",
@@ -379,21 +389,24 @@ function actBuyProp(p, kind){
       {k:"name",     type:"text", label:"Название", placeholder: isBiz ? "Автомойка" : "Дом 3/2"},
       {k:"down",     label:"Первый взнос, $", value:0},
       {k:"price",    label:"Цена, $", value:0},
-      {k:"cashflow", label:"Денежный поток в месяц, $", value:0}
+      {k:"cashflow", label:"Денежный поток в месяц, $", value:0},
+      ...landFields
     ],
     validate: v => (!v.name.trim() ? "Укажи название" :
       validatePositiveMoney(v.down, "Первый взнос") ||
       validatePositiveMoney(v.price, "Цена") ||
-      validatePositiveMoney(v.cashflow, "Денежный поток", true) ||
+      (!Number.isFinite(v.cashflow) ? "Денежный поток: укажи число" : null) ||
       (v.price < v.down ? "Цена меньше первого взноса" : null) ||
+      (v.assetKind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null) ||
       (p.cash < v.down ? "Наличными не хватает — сначала возьми кредит." : null)),
     preview: v => '<div class="row"><span class="k">Ипотека (пассив)</span><span class="v">' +
         money(v.price - v.down) + "</span></div>" +
         '<div class="row"><span class="k">ROI за год</span><span class="v">' +
         (v.down > 0 ? Math.round(v.cashflow * 12 / v.down * 100) + " %" : "—") + "</span></div>" +
         deltaPreview(p, -v.down, v.cashflow),
-    submit: v => push({type:"BUY_PROPERTY", playerId:p.id, assetId:uid(), kind,
+    submit: v => push({type:"BUY_PROPERTY", playerId:p.id, assetId:uid(), kind:v.assetKind || kind,
       name:v.name.trim(), down:v.down, price:v.price, cashflow:v.cashflow,
+      ...(v.assetKind === "land" ? {acres:v.acres, removeCashflowOnSplit:v.removeCashflow === "remove"} : {}),
       label:(isBiz ? "Куплен бизнес " : "Куплена недвижимость ") + v.name.trim() +
             " (взнос " + money(v.down) + ", поток " + signed(v.cashflow) + ")"})
   });
@@ -504,13 +517,20 @@ function actCharity(p){
 }
 
 function actChild(p){
-  if(p.children >= 3){ alert("Лимит игры — трое детей."); return; }
   openForm({
-    title: "Родился ребёнок",
-    preview: () => '<div class="row"><span class="k">Детей станет</span><span class="v">' +
-      (p.children + 1) + "</span></div>" + deltaPreview(p, 0, -p.perChild),
-    submit: () => push({type:"CHILD", playerId:p.id,
-      label:"Родился ребёнок — расходы " + signed(-p.perChild) + "/мес"})
+    title: "Ребёнок",
+    fields:[{k:"operation", type:"select", label:"Действие", options:
+      (p.children < 3 ? [{v:"add", t:"Добавить ребёнка"}] : []).concat(
+        p.children > 0 ? [{v:"remove", t:"Убрать ребёнка"}] : [])}],
+    preview: v => {
+      const add = v.operation === "add";
+      const next = Math.max(0, p.children + (add ? 1 : -1));
+      return '<div class="row"><span class="k">Детей станет</span><span class="v">' +
+        next + "</span></div>" + deltaPreview(p, 0, add ? -p.perChild : p.perChild);
+    },
+    submit: v => push({type:v.operation === "add" ? "CHILD" : "REMOVE_CHILD", playerId:p.id,
+      label:(v.operation === "add" ? "Добавлен ребёнок — расходы " + signed(-p.perChild) :
+        "Убран ребёнок — расходы " + signed(p.perChild)) + "/мес"})
   });
 }
 
@@ -525,14 +545,23 @@ function actDownsized(p){
 }
 
 function actLoan(p){
+  const fields = [{k:"amount", label:"Сумма, $", value:1000, step:1000}];
+  if(p.creditRestricted){
+    fields.push({k:"purpose", type:"select", label:"Разрешённая цель", options:[
+      {v:"mandatory", t:"Обязательный расход"},
+      {v:"downsized", t:"Увольнение"}
+    ]});
+  }
   openForm({
     title: "Кредит в банке",
-    intro: "Кратно $1000 под 10 % в месяц. Выплаты — только проценты, тело долга они не уменьшают.",
-    fields: [{k:"amount", label:"Сумма, $", value:1000, step:1000}],
+    intro: p.creditRestricted
+      ? "После личного банкротства кредит разрешён только на обязательные расходы и увольнение."
+      : "Кратно $1000 под 10 % в месяц. Выплаты — только проценты, тело долга они не уменьшают.",
+    fields,
     validate: v => (v.amount <= 0 || v.amount % 1000 !== 0 ? "Сумма должна быть кратна $1000" : null),
     preview: v => '<div class="row"><span class="k">Расход вырастет на</span><span class="v">' +
       money(v.amount * 0.1) + "/мес</span></div>" + deltaPreview(p, v.amount, -v.amount * 0.1),
-    submit: v => push({type:"TAKE_LOAN", playerId:p.id, amount:v.amount,
+    submit: v => push({type:"TAKE_LOAN", playerId:p.id, amount:v.amount, purpose:v.purpose,
       label:"Взят кредит " + money(v.amount)})
   });
 }
@@ -947,15 +976,6 @@ function actFTDream(p){
   });
 }
 
-function actFTLose(p, share, title){
-  openForm({
-    title,
-    preview: () => deltaPreview(p, share === "all" ? -p.cash : -Math.round(p.cash / 2), 0),
-    submit: () => push({type:"FT_LOSE", playerId:p.id, share,
-      label:title + " " + money(share === "all" ? -p.cash : -Math.round(p.cash / 2))})
-  });
-}
-
 /* ---------- отрисовка ---------- */
 
 function renderChips(){
@@ -1016,8 +1036,9 @@ function renderSetup(){
 function reportRatRace(p){
   const d = derive(p);
   const e = p.expenses, l = p.liabilities;
-  const row = (k, v, extra) => '<div class="row' + (extra || "") + '"><span class="k">' + k +
-    '</span><span class="v">' + v + "</span></div>";
+  const edit = (type, id) => ' <button class="btn" data-edit-card="' + esc(type + ":" + id) + '">Изменить</button>';
+  const row = (k, v, extra, action) => '<div class="row' + (extra || "") + (action ? " actions" : "") + '"><span class="k">' + k +
+    '</span><span class="v">' + v + (action || "") + "</span></div>";
 
   let h = '<div class="sub">Доходы</div>';
   h += row("Заработок", money(p.salary));
@@ -1035,20 +1056,24 @@ function reportRatRace(p){
   h += row("Мелкие кредиты", money(e.retail));
   h += row("Прочие расходы", money(e.other));
   p.otherLiabilities.forEach(a => h += row(esc(a.name), money(a.expense)));
+  p.otherExpenses.filter(item => item.active).forEach(item => h += row(esc(item.name), money(item.amount) + "/мес", "",
+    edit("otherExpense", item.id) + ' <button class="btn danger" data-end-expense="' + esc(item.id) + '">Завершить</button>'));
+  if(d.insuranceExpense > 0) h += row("Страховка недвижимости", money(d.insuranceExpense) + "/мес");
   h += row("Расходы на детей (" + p.children + ")", money(d.childExp));
   h += row("Кредит банка", money(d.bankPay));
   h += row("Общий расход", money(d.totalExpenses), " total");
 
   h += '<div class="sub">Активы</div>';
   h += row("Сбережения", money(p.savings));
-  p.stocks.forEach(s => h += row(esc(s.symbol) + " × " + s.qty, money(s.price) + " / шт"));
-  p.props.forEach(a => h += row(esc(a.name), "взнос " + money(a.down) + " · цена " + money(a.price)));
-  p.otherAssets.forEach(a => h += row(esc(a.name), money(a.cost)));
+  p.stocks.forEach(s => h += row(esc(s.symbol) + " × " + s.qty, money(s.price) + " / шт", "", edit("stock", s.id)));
+  p.props.forEach(a => h += row(esc(a.name), "взнос " + money(a.down) + " · цена " + money(a.price), "", edit("property", a.id)));
+  p.otherAssets.forEach(a => h += row(esc(a.name), money(a.cost), "", edit("otherAsset", a.id)));
+  p.d2yCards.forEach(card => h += row("D2Y №" + card.number, signed(card.income) + "/мес"));
 
   h += '<div class="sub">Пассивы</div>';
   DEBTS.forEach(dd => { if(l[dd.k] > 0) h += row(dd.n, money(l[dd.k])); });
   p.props.forEach(a => { if(a.mortgage > 0) h += row("Ипотека: " + esc(a.name), money(a.mortgage)); });
-  p.otherLiabilities.forEach(a => h += row(esc(a.name), money(a.balance)));
+  p.otherLiabilities.forEach(a => h += row(esc(a.name), money(a.balance), "", edit("otherLiability", a.id)));
   if(p.bankLoan > 0) h += row("Кредит банка", money(p.bankLoan));
 
   return h;
@@ -1056,11 +1081,14 @@ function reportRatRace(p){
 
 function reportFT(p){
   const f = deriveFT(p);
-  const row = (k, v, extra) => '<div class="row' + (extra || "") + '"><span class="k">' + k +
-    '</span><span class="v">' + v + "</span></div>";
+  const edit = (type, id) => ' <button class="btn" data-edit-card="' + esc(type + ":" + id) + '">Изменить</button>';
+  const row = (k, v, extra, action) => '<div class="row' + (extra || "") + (action ? " actions" : "") + '"><span class="k">' + k +
+    '</span><span class="v">' + v + (action || "") + "</span></div>";
   let h = '<div class="sub">Доход в День CASHFLOW</div>';
   h += row("Начальный пассивный доход", money(p.ft.startIncome));
-  p.ft.businesses.forEach(b => h += row(esc(b.name), signed(b.cashflow)));
+  p.ft.businesses.forEach(b => h += row(esc(b.name), signed(b.cashflow), "", edit("ftBusiness", b.id)));
+  p.otherExpenses.filter(item => item.active).forEach(item => h += row(esc(item.name), money(-item.amount) + "/мес", "",
+    edit("otherExpense", item.id) + ' <button class="btn danger" data-end-expense="' + esc(item.id) + '">Завершить</button>'));
   h += row("Итого доход", money(f.income), " total");
   h += '<div class="sub">Победа</div>';
   h += row("Цель", money(f.target));
@@ -1074,12 +1102,41 @@ function reportFT(p){
   return h;
 }
 
+function renderCardCounters(p){
+  let html = '<div class="sub tools202-title">Счётчики карточек</div>';
+  if(!p.cardCounters.length) return html + '<div class="empty tools202-empty">Счётчиков пока нет.</div>';
+  p.cardCounters.forEach(counter => {
+    const tone = counter.remaining === 0 ? " bad" : counter.remaining === 1 ? " warn" : "";
+    html += '<div class="instrument' + tone + '"><div class="instrument-head"><b>' + esc(counter.name) +
+      '</b><span>' + (counter.remaining === 0 ? "истёк" : counter.remaining + " ход.") + '</span></div>' +
+      '<div class="instrument-actions"><button class="btn" data-counter-minus="' + esc(counter.id) + '"' +
+      (counter.remaining === 0 ? " disabled" : "") + '>−1</button><button class="btn" data-counter-plus="' +
+      esc(counter.id) + '">+1</button></div></div>';
+  });
+  return html;
+}
+
 function render202Tools(p){
   if(!is202(G)) return "";
   const forcedShortClose = S.players.some(owner => lockedShorts(owner).length);
   let html = '<div class="sub tools202-title">Инструменты 202</div>';
-  if(!p.options.length && !p.shorts.length){
-    return html + '<div class="empty tools202-empty">Открытых биржевых опционов и коротких позиций нет.</div>';
+  p.d2yCards.forEach(card => {
+    const active = card.number === 1 || (card.number === 2 && p.d2yCards.some(item => item.number === 1)) ||
+      (card.number === 3 && p.d2yCards.some(item => item.number === 1) && p.d2yCards.some(item => item.number === 2));
+    html += '<div class="instrument' + (active ? " good" : " warn") + '"><div class="instrument-head"><b>D2Y №' +
+      card.number + '</b><span>' + (active ? "доход активен" : "ждёт связку") + '</span></div><div class="row"><span class="k">Доход</span><span class="v">' +
+      signed(card.income) + "/мес</span></div></div>";
+  });
+  if(p.insurance){
+    html += '<div class="instrument good"><div class="instrument-head"><b>Страховка недвижимости</b><span>постоянно</span></div>' +
+      '<div class="row"><span class="k">Расход</span><span class="v">' + money(p.insurance.expense) + "/мес</span></div></div>";
+  }
+  p.realEstateOptions.forEach(option => {
+    html += '<div class="instrument warn"><div class="instrument-head"><b>Опцион на недвижимость</b><span>очередь №' +
+      option.order + '</span></div></div>';
+  });
+  if(!p.options.length && !p.shorts.length && !p.d2yCards.length && !p.insurance && !p.realEstateOptions.length){
+    return html + '<div class="empty tools202-empty">Инструментов 202 пока нет.</div>';
   }
   p.options.forEach(option => {
     const price = S.marketPrices[option.symbol];
@@ -1136,6 +1193,318 @@ function bind202Tools(p){
   });
 }
 
+function bindOwnedCardTools(p){
+  $("#report").querySelectorAll("[data-edit-card]").forEach(button => button.onclick = () => {
+    const separator = button.dataset.editCard.indexOf(":");
+    actEditOwnedCard(p, button.dataset.editCard.slice(0, separator), button.dataset.editCard.slice(separator + 1));
+  });
+  $("#report").querySelectorAll("[data-end-expense]").forEach(button => button.onclick = () => {
+    const expense = p.otherExpenses.find(item => item.id === button.dataset.endExpense);
+    if(expense) push({type:"END_OTHER_EXPENSE", playerId:p.id, expenseId:expense.id,
+      label:"Завершён расход: " + expense.name});
+  });
+  $("#report").querySelectorAll("[data-counter-minus]").forEach(button => button.onclick = () =>
+    push({type:"ADJUST_CARD_COUNTER", playerId:p.id, counterId:button.dataset.counterMinus, delta:-1,
+      label:"−1 ход счётчика"}));
+  $("#report").querySelectorAll("[data-counter-plus]").forEach(button => button.onclick = () =>
+    push({type:"ADJUST_CARD_COUNTER", playerId:p.id, counterId:button.dataset.counterPlus, delta:1,
+      label:"+1 ход счётчика"}));
+}
+
+function actOtherExpense(p){
+  openForm({
+    title:"Прочий расход",
+    fields:[
+      {k:"cadence", type:"select", label:"Периодичность", options:[
+        {v:"once", t:"Один раз"}, {v:"monthly", t:"Ежемесячно"}
+      ]},
+      {k:"name", type:"text", label:"Название", placeholder:"Страховой взнос"},
+      {k:"amount", label:"Сумма, $", value:0}
+    ],
+    validate:v => (!v.name.trim() ? "Укажи название" : validatePositiveMoney(v.amount, "Сумма")) ||
+      (v.cadence === "once" ? validateAvailableCash(p, v.amount) : null),
+    preview:v => deltaPreview(p, v.cadence === "once" ? -v.amount : 0,
+      v.cadence === "monthly" ? -v.amount : 0),
+    submit:v => push({type:"ADD_OTHER_EXPENSE", playerId:p.id, expenseId:uid(),
+      name:v.name.trim(), cadence:v.cadence, amount:v.amount,
+      label:v.name.trim() + (v.cadence === "monthly" ? " " + money(-v.amount) + "/мес" : " " + money(-v.amount))})
+  });
+}
+
+function actCardCounter(p){
+  openForm({
+    title:"Счётчики карточек",
+    fields:[
+      {k:"preset", type:"select", label:"Карточка", options:[
+        {v:"Благотворительность", t:"Благотворительность"},
+        {v:"Увольнение / пропуск", t:"Увольнение / пропуск"},
+        {v:"Стихийное бедствие", t:"Стихийное бедствие"},
+        {v:"custom", t:"Другое название"}
+      ]},
+      {k:"name", type:"text", label:"Своё название", placeholder:"Используется для «Другое»"},
+      {k:"remaining", label:"Осталось ходов", value:1}
+    ],
+    validate:v => (!Number.isInteger(v.remaining) || v.remaining < 0 ? "Остаток должен быть целым неотрицательным числом" :
+      (v.preset === "custom" && !v.name.trim() ? "Укажи название" : null)),
+    preview:v => '<div class="row"><span class="k">Осталось</span><span class="v">' + v.remaining + " ход.</span></div>",
+    submit:v => {
+      const name = v.preset === "custom" ? v.name.trim() : v.preset;
+      push({type:"ADD_CARD_COUNTER", playerId:p.id, counterId:uid(), name, remaining:v.remaining,
+        label:"Счётчик «" + name + "»: " + v.remaining});
+    }
+  });
+}
+
+function actLoseCash(p, share, title){
+  const available = Math.max(0, p.cash);
+  const loss = share === "all" ? available : available - Math.round(available / 2);
+  openForm({
+    title,
+    intro:"Банковский кредит для этой потери не создаётся.",
+    preview:() => deltaPreview(p, -loss, 0),
+    submit:() => push({type:"LOSE_CASH_SHARE", playerId:p.id, share,
+      label:title + " " + money(-loss)})
+  });
+}
+
+function actInsurance(p){
+  if(p.insurance){ alert("Страховка уже действует постоянно на всю недвижимость игрока."); return; }
+  openForm({
+    title:"Страховка недвижимости", ok:"Купить",
+    intro:"Постоянный ежемесячный расход защищает всю недвижимость, включая совместную.",
+    fields:[{k:"expense", label:"Ежемесячный расход, $", value:0}],
+    validate:v => validatePositiveMoney(v.expense, "Расход"),
+    preview:v => deltaPreview(p, 0, -v.expense),
+    submit:v => push({type:"BUY_INSURANCE", playerId:p.id, policyId:uid(), expense:v.expense,
+      label:"Куплена страховка недвижимости " + money(-v.expense) + "/мес"})
+  });
+}
+
+function actD2Y(p){
+  openForm({
+    title:"Карточка D2Y", ok:"Добавить",
+    fields:[
+      {k:"number", type:"select", label:"Номер", options:[
+        {v:"1", t:"D2Y №1"}, {v:"2", t:"D2Y №2"}, {v:"3", t:"D2Y №3"}
+      ]},
+      {k:"cost", label:"Стоимость, $", value:0},
+      {k:"income", label:"Доход в месяц, $", value:0}
+    ],
+    validate:v => validatePositiveMoney(v.cost, "Стоимость", true) ||
+      validatePositiveMoney(v.income, "Доход", true) ||
+      (p.cash < v.cost ? "Наличными не хватает — сначала возьми кредит." : null) ||
+      ((Number(v.number) === 1 || Number(v.number) === 3) && p.d2yCards.some(card => card.number === Number(v.number))
+        ? "Такая карточка D2Y уже есть" : null),
+    preview:v => deltaPreview(p, -v.cost, 0),
+    submit:v => push({type:"ADD_D2Y", playerId:p.id, cardId:uid(), number:Number(v.number),
+      cost:v.cost, income:v.income, label:"Добавлена D2Y №" + v.number + " · " + signed(v.income) + "/мес"})
+  });
+}
+
+function optionPropertyFields(){
+  return [
+    {k:"name", type:"text", label:"Объект", placeholder:"Дом 3/2"},
+    {k:"kind", type:"select", label:"Тип", options:[
+      {v:"property", t:"Недвижимость"}, {v:"land", t:"Земля"}
+    ]},
+    {k:"price", label:"Цена, $", value:0},
+    {k:"down", label:"Первый взнос, $", value:0},
+    {k:"mortgage", label:"Ипотека, $", value:0},
+    {k:"cashflow", label:"Денежный поток / мес, $", value:0},
+    {k:"acres", label:"Площадь земли, акров", value:0},
+    {k:"removeCashflow", type:"select", label:"Поток после продажи части земли", options:[
+      {v:"keep", t:"Сохраняется"}, {v:"remove", t:"Удаляется"}
+    ]}
+  ];
+}
+
+function actRealEstateOption(p){
+  const option = p.realEstateOptions[0];
+  if(!option){
+    openForm({
+      title:"Купить опцион на недвижимость", ok:"Купить",
+      fields:[{k:"cost", label:"Стоимость опциона, $", value:0}],
+      validate:v => validatePositiveMoney(v.cost, "Стоимость", true) || validateAvailableCash(p, v.cost),
+      preview:v => deltaPreview(p, -v.cost, 0),
+      submit:v => push({type:"BUY_REAL_ESTATE_OPTION", playerId:p.id, optionId:uid(), cost:v.cost,
+        label:"Куплен опцион на следующую недвижимость"})
+    });
+    return;
+  }
+  const oldest = oldestRealEstateOption(S);
+  if(oldest && oldest.owner.id !== p.id){
+    alert("Сначала решение принимает " + oldest.owner.name + " — его опцион куплен раньше.");
+    return;
+  }
+  const buyers = S.players.filter(player => player.id !== p.id);
+  openForm({
+    title:"Использовать опцион на недвижимость", ok:"Решить",
+    intro:"Опционы разрешаются по порядку покупки. Проданный опцион используется покупателем сразу.",
+    fields:[
+      {k:"action", type:"select", label:"Решение", options:[
+        {v:"buy", t:"Купить объект"},
+        ...(buyers.length ? [{v:"sell", t:"Продать опцион и сразу купить объект покупателю"}] : []),
+        {v:"refuse", t:"Отказаться — опцион сгорает"}
+      ]},
+      ...(buyers.length ? [{k:"buyerId", type:"select", label:"Покупатель опциона",
+        options:buyers.map(player => ({v:player.id, t:player.name}))}] : []),
+      {k:"salePrice", label:"Цена продажи опциона, $", value:0},
+      ...optionPropertyFields()
+    ],
+    validate:v => {
+      if(v.action === "refuse") return null;
+      if(!v.name.trim()) return "Укажи объект";
+      if(!Number.isFinite(v.cashflow)) return "Денежный поток: укажи число";
+      const buyer = v.action === "sell" ? buyers.find(player => player.id === v.buyerId) : p;
+      return validatePositiveMoney(v.price, "Цена") || validatePositiveMoney(v.down, "Первый взнос", true) ||
+        validatePositiveMoney(v.mortgage, "Ипотека", true) ||
+        (v.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null) ||
+        (v.action === "sell" ? validatePositiveMoney(v.salePrice, "Цена опциона", true) : null) ||
+        (buyer && buyer.cash < v.down + (v.action === "sell" ? v.salePrice : 0)
+          ? "У покупателя не хватает наличных" : null);
+    },
+    preview:v => v.action === "refuse" ? '<div class="row"><span class="k">Опцион</span><span class="v neg">сгорит</span></div>' :
+      deltaPreview(p, v.action === "sell" ? v.salePrice : -v.down, v.action === "buy" ? v.cashflow : 0),
+    submit:v => push({type:"RESOLVE_REAL_ESTATE_OPTION", playerId:p.id, optionId:option.id,
+      action:v.action, buyerId:v.buyerId, salePrice:v.salePrice,
+      property:v.action === "refuse" ? undefined : {assetId:uid(), name:v.name.trim(), kind:v.kind,
+        price:v.price, down:v.down, mortgage:v.mortgage, cashflow:v.cashflow,
+        ...(v.kind === "land" ? {acres:v.acres, removeCashflowOnSplit:v.removeCashflow === "remove"} : {})},
+      label:v.action === "refuse" ? "Отказ от опциона на недвижимость" :
+        (v.action === "sell" ? "Опцион продан и использован сразу" : "Опцион использован: " + v.name.trim())})
+  });
+}
+
+function transferable202Assets(p){
+  return []
+    .concat(p.props.map(asset => ({v:"property:" + asset.id, t:"Недвижимость · " + asset.name})))
+    .concat(p.otherAssets.map(asset => ({v:"royalty:" + asset.id, t:"Авторский доход · " + asset.name})));
+}
+
+function actTransfer202(p){
+  const assets = transferable202Assets(p);
+  const buyers = S.players.filter(player => player.id !== p.id);
+  if(!assets.length || !buyers.length){ alert("Для сделки нужен разрешённый актив и другой игрок."); return; }
+  openForm({
+    title:"Сделка с игроком",
+    intro:"Передаются недвижимость и авторские доходы. Кредит банка продавца не переходит.",
+    fields:[
+      {k:"asset", type:"select", label:"Актив", options:assets},
+      {k:"buyerId", type:"select", label:"Покупатель", options:buyers.map(player => ({v:player.id, t:player.name}))},
+      {k:"price", label:"Цена сделки, $", value:0}
+    ],
+    validate:v => validatePositiveMoney(v.price, "Цена", true) ||
+      (buyers.find(player => player.id === v.buyerId)?.cash < v.price ? "У покупателя не хватает наличных" : null),
+    submit:v => {
+      const [assetType, assetId] = v.asset.split(":");
+      push({type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId, assetType, assetId,
+        price:v.price, label:"Актив передан игроку за " + money(v.price)});
+    }
+  });
+}
+
+function actProperty202(p){
+  if(!p.props.length){ alert("Недвижимости пока нет."); return; }
+  openForm({
+    title:"Операции с недвижимостью",
+    fields:[
+      {k:"operation", type:"select", label:"Операция", options:[
+        {v:"repay", t:"Погасить ипотеку полностью"},
+        {v:"split", t:"Продать часть земли"},
+        {v:"exchange", t:"Обменять на объект того же типа"},
+        {v:"insured", t:"Страховое событие"}
+      ]},
+      {k:"assetId", type:"select", label:"Объект", options:p.props.map(asset => ({v:asset.id, t:asset.name}))},
+      {k:"acresSold", label:"Продано акров", value:0},
+      {k:"salePrice", label:"Выручка / убыток, $", value:0},
+      ...optionPropertyFields()
+    ],
+    validate:v => {
+      const asset = p.props.find(item => item.id === v.assetId);
+      if(!asset) return "Объект не найден";
+      if(v.operation === "repay") return p.cash < asset.mortgage ? "Наличными не хватает для погашения ипотеки" : null;
+      if(v.operation === "split") return asset.mortgage > 0 ? "Сначала полностью погаси ипотеку участка" :
+        validatePositiveMoney(v.acresSold, "Акры") || validatePositiveMoney(v.salePrice, "Выручка", true);
+      if(v.operation === "insured") return validatePositiveMoney(v.salePrice, "Убыток");
+      return !v.name.trim() ? "Укажи новый объект" : validatePositiveMoney(v.price, "Цена") ||
+        (asset.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null);
+    },
+    submit:v => {
+      const asset = p.props.find(item => item.id === v.assetId); if(!asset) return;
+      if(v.operation === "repay"){
+        push({type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:asset.id,
+          label:"Погашена ипотека: " + asset.name});
+      } else if(v.operation === "split"){
+        push({type:"SPLIT_LAND", playerId:p.id, assetId:asset.id, acresSold:v.acresSold, salePrice:v.salePrice,
+          label:"Продана часть земли: " + v.acresSold + " акр."});
+      } else if(v.operation === "insured"){
+        const jointKey = asset.jointId || asset.id;
+        const playerIds = S.players.filter(owner => owner.props.some(item =>
+          item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
+        push({type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds, assetId:jointKey, amount:v.salePrice,
+          label:"Страховое событие: " + asset.name});
+      } else {
+        push({type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
+          replacement:{assetId:uid(), name:v.name.trim(), kind:asset.kind, price:v.price, down:v.down,
+            mortgage:v.mortgage, cashflow:v.cashflow,
+            ...(asset.kind === "land" ? {acres:v.acres, removeCashflowOnSplit:v.removeCashflow === "remove"} : {})},
+          label:"Обмен недвижимости: " + asset.name + " → " + v.name.trim()});
+      }
+    }
+  });
+}
+
+function actBankruptcy(p, mode){
+  if(mode === "101"){
+    if(!confirm("Объявить банкротство 101? Активы продаются Банку за половину первого взноса, затем пропускаются три хода.")) return;
+    push({type:"DECLARE_101_BANKRUPTCY", playerId:p.id, label:"Банкротство Cashflow 101"});
+    return;
+  }
+  openForm({
+    title:"Личное банкротство 202", ok:"Объявить",
+    intro:"Банк выкупает недвижимость, акции и биржевые опционы. D2Y и авторские доходы сохраняются.",
+    fields:[{k:"proceeds", label:"Выручка Банка по официальным правилам, $", value:0}],
+    validate:v => validatePositiveMoney(v.proceeds, "Выручка", true),
+    preview:v => '<div class="row"><span class="k">Сначала в кредит банка</span><span class="v">' +
+      money(Math.min(v.proceeds, p.bankLoan)) + '</span></div><div class="row"><span class="k">Непокрытый кредит</span><span class="v">будет списан</span></div>',
+    submit:v => push({type:"DECLARE_202_BANKRUPTCY", playerId:p.id, reason:"personal", proceeds:v.proceeds,
+      label:"Личное банкротство Cashflow 202"})
+  });
+}
+
+function ownedCard(p, type, id){
+  if(type === "stock") return p.stocks.find(item => item.id === id);
+  if(type === "property") return p.props.find(item => item.id === id);
+  if(type === "otherAsset") return p.otherAssets.find(item => item.id === id);
+  if(type === "otherLiability") return p.otherLiabilities.find(item => item.id === id);
+  if(type === "otherExpense") return p.otherExpenses.find(item => item.id === id);
+  if(type === "ftBusiness") return p.ft?.businesses.find(item => item.id === id);
+  return null;
+}
+
+function actEditOwnedCard(p, type, id){
+  const card = ownedCard(p, type, id); if(!card) return;
+  const specs = {
+    stock:[["symbol", "Символ", "text"], ["qty", "Количество"], ["price", "Цена, $"], ["div", "Дивиденд / мес, $"]],
+    property:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первый взнос, $"],
+      ["mortgage", "Ипотека, $"], ["cashflow", "Денежный поток / мес, $"]],
+    otherAsset:[["name", "Название", "text"], ["cost", "Стоимость, $"], ["income", "Доход / мес, $"]],
+    otherLiability:[["name", "Название", "text"], ["balance", "Остаток, $"], ["expense", "Расход / мес, $"]],
+    otherExpense:[["name", "Название", "text"], ["amount", "Расход / мес, $"]],
+    ftBusiness:[["name", "Название", "text"], ["down", "Первый взнос, $"], ["cashflow", "Доход / мес, $"]]
+  };
+  const fields = (specs[type] || []).map(([k, label, fieldType]) => ({k, label, type:fieldType, value:card[k]}));
+  openForm({
+    title:"Изменить карточку", fields,
+    validate:v => {
+      const textKey = type === "stock" ? "symbol" : "name";
+      return !String(v[textKey] || "").trim() ? "Укажи название" : null;
+    },
+    submit:v => push({type:"UPDATE_OWNED_CARD", playerId:p.id, cardType:type, cardId:id, patch:v,
+      label:"Изменена карточка: " + (v.name || v.symbol)})
+  });
+}
+
 function tableActions(p, ft, d){
   const mandatoryOwners = S.players.filter(owner => lockedShorts(owner).length);
   if(mandatoryOwners.length){
@@ -1159,11 +1528,11 @@ function tableActions(p, ft, d){
     ["⭐","Купить свою Мечту", () => actFTDream(p)],
     ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
     ["✏️","Моя мечта", () => actSetDream(p)],
-    ["🧾","Налоговая проверка", () => actFTLose(p, "half", "Налоговая проверка")],
-    ["⚖️","Судебный иск", () => actFTLose(p, "half", "Судебный иск")],
-    ["💔","Развод", () => actFTLose(p, "all", "Развод")],
+    ["🧾","Налоги / Суд", () => actLoseCash(p, "half", "Налоги / Суд")],
+    ["💔","Развод", () => actLoseCash(p, "all", "Развод")],
+    ["🧮","Счётчики карточек", () => actCardCounter(p)],
     ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Разовый расход", () => actCash(p, "out")]
+    ["➖","Прочий расход", () => actOtherExpense(p)]
   ] : [
     ["💵","Получка", () => actPayday(p), true],
     ["📈","Акции и фонды", () => actBuyStock(p)],
@@ -1177,16 +1546,27 @@ function tableActions(p, ft, d){
     ["📉","Увольнение", () => actDownsized(p)],
     ["🏦","Взять кредит", () => actLoan(p)],
     ["✅","Погасить долг", () => actRepay(p)],
+    ["🧾","Налоги / Суд", () => actLoseCash(p, "half", "Налоги / Суд")],
+    ["💔","Развод", () => actLoseCash(p, "all", "Развод")],
+    ["🧮","Счётчики карточек", () => actCardCounter(p)],
     ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Разовый расход", () => actCash(p, "out")],
+    ["➖","Прочий расход", () => actOtherExpense(p)],
     ["✏️","Моя мечта", () => actSetDream(p)]
   ];
   if(is202(G)){
     if(!ft){
       actions.push(["🎯","Купить опцион", () => actBuyOption(p)]);
       actions.push(["📉","Открыть шорт", () => actOpenShort(p)]);
+      actions.push(["🏘","Опцион на недвижимость", () => actRealEstateOption(p)]);
+      actions.push(["🔢","D2Y", () => actD2Y(p)]);
+      actions.push(["🛡","Страховка", () => actInsurance(p)]);
+      actions.push(["🏗","Операции с недвижимостью", () => actProperty202(p)]);
+      actions.push(["🤝","Сделка с игроком", () => actTransfer202(p)]);
     }
     actions.push(["🌐","Рынок 202", () => actMarket202(p)]);
+  }
+  if(!ft && d.cashflow < 0 && p.cash + d.cashflow < 0){
+    actions.push(["⚠️","Личное банкротство", () => actBankruptcy(p, is202(G) ? "202" : "101"), true]);
   }
   if(!ft && d.canEscape) actions.push(["🚀","Выйти на дорожку", () => actEnterFT(p), true]);
   return actions;
@@ -1216,8 +1596,8 @@ function renderTable(){
   if(ft){
     if(p.ft.charity) badges.push('<span class="badge">🎲 Благотворительность: 1–3 кости до конца игры</span>');
   } else {
-    if(p.charityTurns > 0) badges.push('<button class="badge" data-tick="charity">🎲 Благотворительность: ' + p.charityTurns + " хода — снять</button>");
-    if(p.skipTurns > 0)    badges.push('<button class="badge" data-tick="skip">⏭ Пропуск ходов: ' + p.skipTurns + " — снять</button>");
+    if(p.charityTurns > 0) badges.push('<span class="badge">🎲 Благотворительность: ' + p.charityTurns + " хода</span>");
+    if(p.skipTurns > 0)    badges.push('<span class="badge">⏭ Пропуск ходов: ' + p.skipTurns + "</span>");
     if(p.children > 0)     badges.push('<span class="badge">👶 Детей: ' + p.children + "</span>");
   }
   if(p.dream){
@@ -1226,14 +1606,6 @@ function renderTable(){
       (p.dream.bought ? " · куплена" : "") + "</span>");
   }
   $("#badges").innerHTML = badges.join("");
-  const forcedShortClose = S.players.some(owner => lockedShorts(owner).length);
-  $("#badges").querySelectorAll("[data-tick]").forEach(el => {
-    el.disabled = forcedShortClose;
-    if(!forcedShortClose){
-      el.onclick = () => push({type: el.dataset.tick === "charity" ? "TICK_CHARITY" : "TICK_SKIP", playerId:p.id,
-        label: el.dataset.tick === "charity" ? "Ход с благотворительностью" : "Пропущен ход"});
-    }
-  });
 
   const acts = tableActions(p, ft, d);
 
@@ -1242,8 +1614,10 @@ function renderTable(){
   $("#acts").querySelectorAll("[data-a]").forEach(el =>
     el.onclick = () => acts[Number(el.dataset.a)][2]());
 
-  $("#report").innerHTML = "<h2>Финансовый отчёт</h2>" + (ft ? reportFT(p) : reportRatRace(p)) + render202Tools(p);
+  $("#report").innerHTML = "<h2>Финансовый отчёт</h2>" + (ft ? reportFT(p) : reportRatRace(p)) +
+    renderCardCounters(p) + render202Tools(p);
   bind202Tools(p);
+  bindOwnedCardTools(p);
 }
 
 function renderLog(){
