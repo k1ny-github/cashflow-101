@@ -212,7 +212,13 @@ Commit: `feat: добавить режимы 101 и 202`
 
 **Interfaces:**
 - Produces: `optionPayout(option, marketPrice)`, `shortResult(position, marketPrice)`, `validateLot(qty, strict)`, `marketEffects(state, symbol, price)`.
-- New events: `BUY_OPTION`, `OPTION_ROUND`, `EXERCISE_OPTION`, `MARKET_PRICE`, `MARKET_SPLIT`, `COMPANY_BANKRUPTCY`, `OPEN_SHORT`, `CLOSE_SHORT`.
+- New events: `BUY_OPTION`, `ADJUST_OPTION_ROUNDS`, `EXERCISE_OPTION`,
+  `MARKET_PRICE`, `MARKET_SPLIT`, `COMPANY_BANKRUPTCY`, `OPEN_SHORT`,
+  `CLOSE_SHORT`. Legacy `OPTION_ROUND` remains replay-only.
+
+New `BUY_OPTION` stores `premiumPerShare` and `premiumTotal`; a legacy
+`BUY_OPTION.premium` is interpreted as the already-total premium so old games
+do not change.
 
 - [ ] **Step 1: Write failing tests for call, put, straddle and premium**
 
@@ -227,17 +233,42 @@ test("put payout follows the book example", () => {
 
 - [ ] **Step 2: Write failing tests for three rounds and Custom rounds**
 
-At `remaining:1`, `OPTION_ROUND` makes the option inactive. Removing that event restores it.
+At `remaining:1`, a new per-option `ADJUST_OPTION_ROUNDS` decrement makes that
+option inactive. Removing the adjustment event restores it. Incrementing by
+one repairs an accidental manual decrement. Legacy `OPTION_ROUND` is tested
+only for unchanged replay.
 
 - [ ] **Step 3: Write failing tests for short profit, loss and mandatory close**
 
 - [ ] **Step 4: Implement pure market calculations in `market202.js`**
 
+Standard accepts only OK4U/MYT4U and quantities 100–5000 in steps of 100.
+Custom uses its configured duration and allows a nonstandard lot only after a
+visible confirmation. Premium is labeled per share and acquisition deducts
+`qty * premiumPerShare` exactly once. Calls and puts pay intrinsic value only;
+premium is neither deducted nor returned at exercise. New options cannot be
+opened on the Fast Track.
+
 - [ ] **Step 5: Apply market events atomically to all players**
+
+A global price event exposes profitable active options, ordinary stock and
+shorts that must close. A 2:1 split adjusts every player's stocks, options and
+shorts, doubling quantities and halving price, strike and per-share premium.
+A reverse split performs the inverse with one documented integer rule for odd
+quantities. Company bankruptcy zeroes stock and calls while puts and shorts
+settle against market price 0; all affected players are previewed before the
+event is confirmed.
+
+Opening a short stores symbol, quantity and opening price. Sale proceeds stay
+in a bank envelope and never increase free cash. The next matching market
+price requires close with `qty * (openPrice - buybackPrice)`. A short loss may
+not use a bank loan; offer asset sale or personal bankruptcy instead.
 
 - [ ] **Step 6: Add `Инструменты 202` cards and market dialogs**
 
 Each option shows call/put, ticker, premium, strike, quantity, remaining rounds, `−1`, `+1`, and contextual exercise action. Each short shows entry price and the next matching market event requires close confirmation.
+Profit is green, a final option round is yellow, and expiry or mandatory short
+closure is red.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -256,8 +287,13 @@ Commit: `feat: добавить опционы и короткие позици�
 **Interfaces:**
 - Produces: `d2yIncome(cards)`, `splitLand(asset, acresSold, salePrice)`, `insuranceExpense(player)`.
 - New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`, `UPDATE_OWNED_CARD`.
+- Cross-mode expense events: `ADD_OTHER_EXPENSE`, `END_OTHER_EXPENSE`.
 
 - [ ] **Step 1: Write failing tests for real-estate option priority and expiry**
+
+The option applies to the next real-estate card. Multiple holders resolve in
+purchase order. A holder buys the object, sells the option to another player
+who must use it immediately, or refuses and loses the option.
 
 - [ ] **Step 2: Write failing tests for D2Y card limits and income activation**
 
@@ -270,9 +306,32 @@ test("D2Y 3 pays only with 1 and at least one 2", () => {
 
 - [ ] **Step 3: Write failing tests for insurance, land split and exchange**
 
+Insurance is a permanent monthly expense and protects all real estate,
+including jointly held property; insured loss is a separate event. Land may
+be split only when its mortgage has first been fully repaid, then remaining
+area and book value reduce proportionally and obsolete cashflow is removed
+when the card says so. Exchange atomically replaces property with the same
+type, removes old mortgage/cashflow, writes the new values and moves no cash.
+Also test `Прочий расход`: `once` reduces cash exactly once, while `monthly`
+creates a named recurring expense that reduces every derived monthly cashflow
+without an immediate duplicate cash charge. Ending the recurring expense is a
+separate reversible journal event.
+
 - [ ] **Step 4: Write failing tests for 202 bankruptcy restrictions**
 
+202 personal bankruptcy sells permitted assets to the Bank, directs proceeds
+to bank credit first, writes off the uncovered remainder, applies three
+skipped turns, and blocks credit for deals while retaining it only for
+mandatory costs and downsizing. D2Y and royalties are excluded. Keep the 101
+procedure separately testable and do not reinterpret old journals.
+
 - [ ] **Step 5: Implement the asset calculations and events**
+
+Player-to-player deals may transfer real estate, royalties and an unused real
+estate option, but not shares, stock options, shorts or D2Y. The seller's bank
+loan never transfers. D2Y #1 and #3 are limited to one, #2 is unlimited; #2
+income requires #1 and #3 income requires #1 plus at least one #2. D2Y cannot
+be transferred or sold in bankruptcy.
 
 - [ ] **Step 6: Add focused UI forms and report rows**
 
@@ -283,6 +342,11 @@ test("D2Y 3 pays only with 1 and at least one 2", () => {
 отдельным событием `UPDATE_OWNED_CARD`, поэтому удаление этой строки журнала
 возвращает прежние данные. Биржевые опционы, шорты и срок их действия через
 эту общую форму не редактируются — для них остаются специализированные действия.
+
+The `Прочий расход` form is available in both 101 and 202 and asks whether the
+expense is one-time or monthly. A monthly expense appears as its own report
+row, can be edited as an owned expense card, and can be ended without deleting
+its history; deleting the end event restores it.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -315,13 +379,28 @@ Neither +50,000 alone nor dreams alone wins. +50,000 plus own dream wins; +50,00
 
 - [ ] **Step 3: Write failing tests for business resale multiplier and franchise**
 
+Fast Track businesses store base price, cashflow, ownership tokens and
+franchises. Purchase uses full price. Another player's landing forces a sale
+at the token-adjusted price. An owner landing again may create at most one
+franchise during that turn.
+
 - [ ] **Step 4: Implement the pure calculations and events**
+
+In 202 entry closes the Rat Race report and tools. In 101 retain the existing
+escape condition and result. The 202 victory condition is an AND: business
+income growth of at least $50,000 plus either the player's selected Dream or
+two distinct unselected Dreams.
 
 - [ ] **Step 5: Add Fast Track UI for unselected dreams, resale and franchise**
 
 `Купить мечту` opens a first choice between `Моя мечта` and `Другая мечта`.
 Other Dreams are stored as a list; the same board field cannot be sold twice,
 and buying more than two distinct other Dreams remains allowed.
+Another player's selected Dream can receive a token but can never be bought.
+Only the owner may buy a selected Dream, for `base * (1 + foreignTokens)`.
+An unselected Dream is purchased by the first player who lands there and then
+becomes unavailable table-wide. Keep the house-rule Fast Track charity at
+$100,000 with selectable 1, 2 or 3 dice through the end of the game.
 
 - [ ] **Step 6: Run tests and commit**
 
@@ -341,7 +420,11 @@ Commit: `feat: реализовать Скоростную дорожку 202`
 
 - [ ] **Step 1: Write an end-to-end event-log test for each mode**
 
-The 101 fixture must equal its pre-change report. Standard must expire at 3; Custom at its configured limit. Import/export round-trips all metadata.
+The 101 fixture must equal its pre-change report. Standard must expire at 3;
+Custom at its configured limit. Import/export round-trips mode, settings,
+events, current and unfinished setupPortfolio. A damaged event keeps the game
+loadable but produces a clear warning with its operation number instead of
+being swallowed silently.
 
 - [ ] **Step 2: Add versioned script tags and update `APP_VERSION`**
 
@@ -349,7 +432,16 @@ The 101 fixture must equal its pre-change report. Standard must expire at 3; Cus
 
 Check setup, option cards, market modal, short close, property option, D2Y and Fast Track victory without clipped controls or horizontal scrolling.
 
+Cashflow 101 hides every 202 control. The header updates mode immediately.
+Before each financial operation show resulting cash and monthly-flow change;
+fix labels and word forms, especially down payment versus mortgage. Include
+the owned-card edit and undo flow in desktop and mobile checks.
+
 - [ ] **Step 4: Update README with official 202 behavior and limitations**
+
+Document the official rules, the $100,000 charity house rule, lack of
+multi-device synchronization, and that unsupported physical cards remain
+manual rather than coming from a complete card database.
 
 - [ ] **Step 5: Run syntax, unit and integration checks**
 
@@ -361,7 +453,7 @@ Run: `node --test tests/*.test.js`
 
 Commit: `docs: описать режимы и правила Cashflow 202`
 
-### Task 8: Финальная проверка и публикация
+### Task 8: Финальная проверка без публикации
 
 **Files:**
 - Modify only if verification reveals a defect.
@@ -374,8 +466,7 @@ Commit: `docs: описать режимы и правила Cashflow 202`
 
 - [ ] **Step 4: Review the diff for unrelated or destructive changes**
 
-- [ ] **Step 5: Push `main` to `origin`**
+- [ ] **Step 5: Stop with the verified isolated branch and present release options**
 
-- [ ] **Step 6: Wait for GitHub Pages and verify versioned scripts and all three modes on the live URL**
-
-Expected URL: `https://k1ny-github.github.io/cashflow-101/`
+Do not merge, push or publish as part of implementation. Those are separate
+side effects to perform only after the user chooses the release option.
