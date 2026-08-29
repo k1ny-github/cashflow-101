@@ -330,6 +330,10 @@ and immediately zeroes any remaining Rat Race charity turns. Add cash-loss
 tests for `half` and `all` in both 101 and 202 without bank borrowing.
 Test that `REMOVE_CHILD` decrements the child count and child expenses, never
 goes below zero, and is undone by deleting that journal event.
+Add end-to-end negative-cashflow cases in 101 and 202: negative portfolio or
+recurring-expense cashflow remains negative, PAYDAY subtracts that amount from
+cash without clamping, warnings still render, and the relevant sale/bankruptcy
+paths remain available when cash cannot cover the next month.
 
 - [ ] **Step 4: Write failing tests for 202 bankruptcy restrictions**
 
@@ -454,6 +458,8 @@ Custom at its configured limit. Import/export round-trips mode, settings,
 events, current and unfinished setupPortfolio. A damaged event keeps the game
 loadable but produces a clear warning with its operation number instead of
 being swallowed silently.
+Include a reload/replay scenario whose monthly cashflow is negative and verify
+cash, report totals, warnings and undo remain usable.
 
 - [ ] **Step 2: Add versioned script tags and update `APP_VERSION`**
 
