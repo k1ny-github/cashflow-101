@@ -171,14 +171,18 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
       а стартовые наличные банк выдаст по правилам: месячный денежный поток плюс сбережения.
     </p>
     <div class="f">
-      <label for="np-mode">Режим игры</label>
-      <select id="np-mode"></select>
-      <div class="hint" id="setup-mode-hint"></div>
+      <label for="np-mode">Режим партии</label>
+      <select id="np-mode">
+        <option value="101">Cashflow 101</option>
+        <option value="202-standard">Cashflow 202 Standard</option>
+        <option value="202-custom">Cashflow 202 Custom</option>
+      </select>
+      <div class="hint" id="np-mode-hint"></div>
     </div>
-    <div class="f hide" id="np-option-rounds-wrap">
-      <label for="np-option-rounds">Количество раундов опционов (перед игрой)</label>
-      <input id="np-option-rounds" type="number" inputmode="numeric" step="1" value="3" min="1">
-      <div class="hint">Используется в кастомном режиме. Через это число опцион существует на поле.</div>
+    <div class="f hide" id="np-rounds-wrap">
+      <label for="np-rounds">Срок опциона, туров</label>
+      <input id="np-rounds" type="number" min="1" step="1" inputmode="numeric" value="3">
+      <div class="hint">В Custom можно выбрать любое целое число от 1.</div>
     </div>
     <div class="f">
       <label for="np-name">Имя игрока</label>
@@ -249,9 +253,14 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 
 </div>
 
-<dialog id="dlg"><div class="dlg" id="dlg-body"></div></dialog>
+<dialog id="dlg" aria-labelledby="dlg-title"><div class="dlg" id="dlg-body"></div></dialog>
 <script src="professions.js?v=5"></script>
+<script src="game-config.js?v=5"></script>
+<script src="market202.js?v=5"></script>
+<script src="assets202.js?v=5"></script>
+<script src="fast-track202.js?v=5"></script>
 <script src="engine.js?v=5"></script>
+<script src="save.js?v=5"></script>
 <script src="ui.js?v=5"></script>
 </body>
 </html>

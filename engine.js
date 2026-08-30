@@ -6,6 +6,8 @@
    Состояние стола = свёртка журнала событий. Нигде не хранится
    ни пассивный доход, ни общий расход, ни денежный поток — всё
    это каждый раз выводится из списка активов и пассивов.
+   Поэтому цифры физически не могут разойтись между собой,
+   а удаление любой строки журнала честно пересчитывает партию.
    ============================================================ */
 
 function blankPlayer(id, name, prof){
@@ -37,9 +39,8 @@ function blankPlayer(id, name, prof){
     charityTurns: 0,
     skipTurns: 0,
     dream: null,  // {name, base, tokens, bought} — выбирается в начале партии
-    otherDreams: [], // [{ownerId, ownerName, name, price}]
-    ft: null,       // {startIncome, target, businesses, charity}
-    options: []     // [{id,symbol,type,strike,premium,qty,remaining,sourceMode}]
+    otherDreams: [], // [{fieldId, name, price}] — невыбранные Мечты Скоростной дорожки 202
+    ft: null      // {startIncome, target, businesses, charity}
   };
 }
 
@@ -78,16 +79,27 @@ function deriveFT(p){
   const insuranceMonthly = typeof insuranceExpense === "function" ? insuranceExpense(p) : 0;
   const income = p.ft.startIncome + biz - recurringExpenses - insuranceMonthly;
   const bought = !!(p.dream && p.dream.bought);
-  const otherDreams = Array.isArray(p.otherDreams) ? p.otherDreams.length : 0;
+  const otherDreams = Array.isArray(p.otherDreams) ? p.otherDreams : [];
+  const official202 = p.gameMode === "202-standard" || p.gameMode === "202-custom";
+  const victoryDreams = official202
+    ? otherDreams.filter(dream => dream && dream.kind !== "legacy-selected")
+    : otherDreams;
+  const distinctOtherDreams = new Set(victoryDreams.map((dream, index) =>
+    dream && (dream.fieldId ?? dream.id ?? dream.ownerId ?? dream.name) || index)).size;
+  const legacySelectedDreams = new Set(otherDreams.filter(dream => dream && dream.kind === "legacy-selected")
+    .map((dream, index) => dream.fieldId ?? dream.id ?? dream.ownerId ?? dream.name ?? index)).size;
+  const won202 = typeof hasWon202 === "function"
+    ? hasWon202(p)
+    : biz >= 50000 && (bought || distinctOtherDreams >= 2);
   return {
     biz, recurringExpenses, insuranceExpense:insuranceMonthly, income,
     target: p.ft.target,
     left: official202 ? Math.max(0, 50000 - biz) : Math.max(0, p.ft.target - income),
     dreamBought: bought,
-    otherDreamsBought: otherDreams,
-    /* Побеждает только тот, кто купил СВОЮ мечту, либо первым набрал
-       нужный пассивный доход, либо имеет 2 чужие мечты. */
-    won: income >= p.ft.target || bought || otherDreams >= 2
+    otherDreamsBought: distinctOtherDreams,
+    /* 101 сохраняет прежнее условие. В 202 расчёт передан отдельным
+       официальным правилам с обязательной связкой дохода и Мечты. */
+    won: official202 ? won202 : income >= p.ft.target || bought || legacySelectedDreams >= 2
   };
 }
 
@@ -98,49 +110,63 @@ function dreamPrice(p){
   return p.dream.base * (1 + p.dream.tokens);
 }
 
-function optionPayout(option, marketPrice){
-  if(!option || !Number.isFinite(option.strike) || !Number.isFinite(option.qty) || !Number.isFinite(marketPrice)){
-    return 0;
-  }
-  if(option.type === "call") return Math.max(0, (marketPrice - option.strike) * option.qty);
-  if(option.type === "put") return Math.max(0, (option.strike - marketPrice) * option.qty);
-  return 0;
-}
-
 /* Стартовые наличные: месячный денежный поток плюс сбережения (правила, стр. 2). */
 function startingCash(p){ return derive(p).cashflow + p.savings; }
 
-function normalizePortfolioValue(n){
-  return Number.isFinite(n) ? n : 0;
+function finiteNumber(value){
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
-function addInitialPortfolio(np, profPortfolio, addedPortfolio){
-  const p = Object.assign({cash:0, stocks:[], properties:[]}, profPortfolio || {}, addedPortfolio || {});
-  (p.stocks || []).forEach((s, idx) => {
-    if(!s || !s.symbol) return;
-    np.stocks.push({
-      id: "ip-stock-" + np.id + "-" + idx,
-      symbol: s.symbol,
-      qty: Math.max(0, normalizePortfolioValue(s.qty)),
-      price: Math.max(0, normalizePortfolioValue(s.price)),
-      div: Math.max(0, normalizePortfolioValue(s.div))
-    });
-  });
-  (p.properties || []).forEach((a, idx) => {
-    if(!a || !a.name) return;
-    const price = Math.max(0, normalizePortfolioValue(a.price));
-    const down = Math.max(0, normalizePortfolioValue(a.down));
-    np.props.push({
-      id: "ip-prop-" + np.id + "-" + idx,
-      name: a.name,
-      kind: a.kind || "property",
-      down,
+function otherAssetKind(value){
+  return value === "royalty" ? "royalty" : "other";
+}
+
+function applyInitialPortfolio(p, portfolio){
+  if(!portfolio || typeof portfolio !== "object") return;
+  const source = "initial-portfolio";
+  p.stocks = (Array.isArray(portfolio.stocks) ? portfolio.stocks : []).map((stock, index) => ({
+    id: stock.id || p.id + "-initial-stock-" + index,
+    symbol: stock.symbol,
+    qty: finiteNumber(stock.qty),
+    price: finiteNumber(stock.price),
+    div: finiteNumber(stock.div),
+    source
+  }));
+  p.props = (Array.isArray(portfolio.properties) ? portfolio.properties : []).map((property, index) => {
+    const price = finiteNumber(property.price);
+    const down = finiteNumber(property.down);
+    return {
+      id: property.id || p.id + "-initial-property-" + index,
+      name: property.name,
+      kind: property.kind || "property",
       price,
-      mortgage: a.mortgage != null ? Math.max(0, normalizePortfolioValue(a.mortgage)) : Math.max(0, price - down),
-      cashflow: Math.max(0, normalizePortfolioValue(a.cashflow))
-    });
+      down,
+      mortgage: property.mortgage === undefined || property.mortgage === ""
+        ? price - down
+        : finiteNumber(property.mortgage),
+      cashflow: finiteNumber(property.cashflow),
+      ...(property.acres === undefined ? {} : {acres:finiteNumber(property.acres)}),
+      ...((property.removeCashflowOnSplit || property.removeCashflow || property.cashflowEndsOnSplit)
+        ? {removeCashflowOnSplit:true} : {}),
+      source
+    };
   });
-  np.cash += Math.max(0, normalizePortfolioValue(p.cash));
+  p.otherAssets = (Array.isArray(portfolio.otherAssets) ? portfolio.otherAssets : []).map((asset, index) => ({
+    id: asset.id || p.id + "-initial-other-asset-" + index,
+    name: asset.name,
+    cost: finiteNumber(asset.cost),
+    income: finiteNumber(asset.income),
+    kind: otherAssetKind(asset.kind),
+    source
+  }));
+  p.otherLiabilities = (Array.isArray(portfolio.otherLiabilities) ? portfolio.otherLiabilities : []).map((liability, index) => ({
+    id: liability.id || p.id + "-initial-other-liability-" + index,
+    name: liability.name,
+    balance: finiteNumber(liability.balance),
+    expense: finiteNumber(liability.expense),
+    source
+  }));
 }
 
 /* Подъёмные при выходе на дорожку: пассивный доход, округлённый
@@ -444,19 +470,76 @@ function apply(state, ev, config){
       : PROFESSIONS.find(x => x.id === ev.professionId);
     if(!prof || state.players.some(x => x.id === ev.playerId)) return;
     const np = blankPlayer(ev.playerId, ev.name, prof);
-    addInitialPortfolio(np, prof.initialPortfolio, ev.initialPortfolio);
-    np.cash += startingCash(np);
+    np.gameMode = config?.mode || "101";
+    applyInitialPortfolio(np, ev.initialPortfolio);
+    if(ev.dream && ev.dream.name){
+      np.dream = {
+        fieldId:String(ev.dream.fieldId || ev.dream.id || ev.dream.name),
+        name:ev.dream.name,
+        base:finiteNumber(ev.dream.price ?? ev.dream.base),
+        tokens:0,
+        bought:false
+      };
+    }
+    np.cash = startingCash(np) + finiteNumber(ev.initialPortfolio?.cash);
     state.players.push(np);
     return;
   }
 
+  if(ev.type === "INSURED_PROPERTY_EVENT" || ev.type === "INSURED_EVENT"){
+    const ids = Array.isArray(ev.playerIds) ? ev.playerIds : [ev.playerId];
+    const amount = Math.max(0, finiteNumber(ev.amount));
+    ids.forEach(playerId => {
+      const owner = state.players.find(player => player.id === playerId);
+      if(!owner) return;
+      const ownsProperty = owner.props.some(asset => asset.id === ev.assetId || asset.jointId === ev.assetId);
+      if(ownsProperty && !owner.insurance) owner.cash -= amount;
+    });
+    return;
+  }
+
+  /* Старый OPTION_ROUND снимал один тур сразу у всех опционов. Новые игры
+     используют ADJUST_OPTION_ROUNDS для одной карточки, но старые журналы
+     должны воспроизводиться без изменений. */
   if(ev.type === "OPTION_ROUND"){
-    state.players.forEach(p => {
-      p.options = p.options.filter(opt => {
-        const remaining = Number.isFinite(Number(opt.remaining)) ? Number(opt.remaining) : 3;
+    state.players.forEach(player => {
+      player.options = player.options.filter(option => {
+        const remaining = Number.isFinite(Number(option.remaining)) ? Number(option.remaining) : 3;
         if(remaining <= 1) return false;
-        opt.remaining = remaining - 1;
+        option.remaining = remaining - 1;
         return true;
+      });
+    });
+    return;
+  }
+
+  if(ev.type === "MARKET_PRICE"){
+    const price = Number(ev.price);
+    if(!ev.symbol || !Number.isFinite(price) || price < 0) return;
+    state.marketPrices[ev.symbol] = price;
+    state.players.forEach(player => player.shorts.forEach(position => {
+      if(position.symbol === ev.symbol && !position.mustClose){
+        position.mustClose = true;
+        position.closePrice = price;
+      }
+    }));
+    return;
+  }
+
+  if(ev.type === "COMPANY_BANKRUPTCY"){
+    if(!ev.symbol) return;
+    state.marketPrices[ev.symbol] = 0;
+    state.players.forEach(player => {
+      player.stocks = player.stocks.filter(stock => stock.symbol !== ev.symbol);
+      player.options = player.options.filter(option => {
+        if(option.symbol !== ev.symbol) return true;
+        if(option.remaining > 0 && option.type === "put") player.cash += optionPayout(option, 0);
+        return false;
+      });
+      player.shorts = player.shorts.filter(position => {
+        if(position.symbol !== ev.symbol) return true;
+        player.cash += shortResult(position, 0);
+        return false;
       });
     });
     return;
@@ -467,12 +550,35 @@ function apply(state, ev, config){
   if(ev.type === "MARKET_SPLIT"){
     const ratio = Number(ev.ratio);
     if(!ev.symbol || !Number.isFinite(ratio) || ratio <= 0) return;
-    state.players.forEach(player => player.stocks.forEach(h => {
-      if(h.symbol === ev.symbol){
-        h.qty *= ratio;
-        h.price /= ratio;
-      }
-    }));
+    state.players.forEach(player => {
+      player.stocks.forEach(h => {
+        if(h.symbol === ev.symbol){
+          h.qty = adjustedQuantity(h.qty, ratio);
+          h.price /= ratio;
+        }
+      });
+      player.stocks = player.stocks.filter(h => h.symbol !== ev.symbol || h.qty > 0);
+      player.options.forEach(option => {
+        if(option.symbol === ev.symbol){
+          option.qty = adjustedQuantity(option.qty, ratio);
+          option.strike /= ratio;
+          option.premiumPerShare /= ratio;
+        }
+      });
+      player.options = player.options.filter(option => option.symbol !== ev.symbol || option.qty > 0);
+      player.shorts.forEach(position => {
+        if(position.symbol === ev.symbol){
+          position.qty = adjustedQuantity(position.qty, ratio);
+          position.openPrice /= ratio;
+          position.proceedsEnvelope = position.qty * position.openPrice;
+          if(position.mustClose) position.closePrice /= ratio;
+        }
+      });
+      player.shorts = player.shorts.filter(position => position.symbol !== ev.symbol || position.qty > 0);
+    });
+    if(Object.prototype.hasOwnProperty.call(state.marketPrices, ev.symbol)){
+      state.marketPrices[ev.symbol] /= ratio;
+    }
     return;
   }
 
@@ -613,29 +719,6 @@ function apply(state, ev, config){
       return;
     }
 
-    case "BUY_OPTION":
-      p.options.push({
-        id: ev.optionId,
-        symbol: ev.symbol,
-        type: ev.typeOpt,
-        strike: ev.strike,
-        premium: ev.premium,
-        qty: ev.qty,
-        remaining: Number.isFinite(ev.remaining) ? Number(ev.remaining) : 3,
-        sourceMode: ev.sourceMode
-      });
-      p.cash -= ev.premium;
-      return;
-
-    case "EXERCISE_OPTION": {
-      const i = p.options.findIndex(x => x.id === ev.optionId);
-      if(i === -1) return;
-      const option = p.options[i];
-      p.cash += optionPayout(option, ev.marketPrice);
-      p.options = p.options.filter(x => x.id !== option.id);
-      return;
-    }
-
     /* Наличными платится только первый взнос. Выплаты по ипотеке уже учтены
        в денежном потоке карточки и в колонку «Расходы» не вносятся (стр. 6). */
     case "BUY_PROPERTY": {
@@ -689,7 +772,7 @@ function apply(state, ev, config){
     }
 
     case "CHILD":
-      if(p.children >= 3) return;
+      if(p.children >= 3) return;   // лимит игры — трое детей
       p.children += 1;
       return;
 
@@ -1033,29 +1116,57 @@ function apply(state, ev, config){
     /* Покупка СВОЕЙ Мечты — это победа. */
     case "FT_DREAM":
       if(!p.ft) return;
-      if(!p.dream){
-        p.dream = {name: ev.name || "Мечта", base: ev.price || 0, tokens: 0, bought: false};
+      if(!p.dream){   // журнал, записанный прежней версией приложения
+        p.dream = {
+          fieldId:String(ev.fieldId || ev.dreamId || ev.assetId || ev.name || "Мечта"),
+          name:ev.name || "Мечта",
+          base:ev.price || 0,
+          tokens:0,
+          bought:false
+        };
       }
       p.cash -= dreamPrice(p);
       p.dream.bought = true;
       return;
 
-    /* Покупка другой мечты на скоростной. Можно купить несколько разных. */
+    /* Старые журналы могли покупать выбранную Мечту другого игрока. Новая
+       версия больше не создаёт такие события, но воспроизводит их как раньше. */
     case "FT_OTHER_DREAM": {
-      if(!p.ft) return;
-      if(p.id === ev.ownerId) return;
-      const owner = state.players.find(x => x.id === ev.ownerId);
+      if(!p.ft || p.id === ev.ownerId) return;
+      const owner = state.players.find(player => player.id === ev.ownerId);
       if(!owner || !owner.dream || owner.dream.bought) return;
-      if((owner.dream.otherBoughtBy || []).includes(p.id)) return;
-      owner.dream.otherBoughtBy = owner.dream.otherBoughtBy || [];
+      owner.dream.otherBoughtBy = Array.isArray(owner.dream.otherBoughtBy)
+        ? owner.dream.otherBoughtBy : [];
+      if(owner.dream.otherBoughtBy.includes(p.id)) return;
+      const price = dreamPrice(owner);
       owner.dream.otherBoughtBy.push(p.id);
-      p.cash -= dreamPrice(owner);
+      p.cash -= price;
       p.otherDreams.push({
-        ownerId: owner.id,
-        ownerName: owner.name,
-        name: owner.dream.name,
-        price: dreamPrice(owner)
+        kind:"legacy-selected",
+        fieldId:String(owner.dream.fieldId || owner.id),
+        ownerId:owner.id,
+        ownerName:owner.name,
+        name:owner.dream.name,
+        price
       });
+      return;
+    }
+
+    case "FT_BUY_OTHER_DREAM": {
+      if(!p.ft || !(is202Config(config) || is202Player(p))) return;
+      const fieldId = String(ev.fieldId || ev.dreamId || ev.assetId || ev.name || "").trim();
+      if(!fieldId) return;
+      const dreamName = String(ev.name || "").trim();
+      const selected = state.players.some(player => player.dream && (
+        String(player.dream.fieldId || player.dream.name) === fieldId ||
+        (dreamName && String(player.dream.name).trim() === dreamName)
+      ));
+      const sold = state.players.some(player => (player.otherDreams || []).some(dream =>
+        String(dream.fieldId || dream.id || dream.name) === fieldId));
+      if(selected || sold) return;
+      const price = Math.max(0, finiteNumber(ev.price));
+      p.cash -= price;
+      p.otherDreams.push({kind:"unselected", fieldId, name:String(ev.name || "Мечта"), price});
       return;
     }
 
@@ -1107,14 +1218,18 @@ function warnings(p){
   });
   if(p.ft){
     const f = deriveFT(p);
-    if(f.won) out.push({level:"good", text:
-      f.dreamBought
-        ? "Своя Мечта куплена — победа!"
-        : f.otherDreamsBought >= 2
-          ? "2 чужие мечты куплены — победа!"
-          : "Цель по пассивному доходу достигнута — победа!"});
+    if(f.won){
+      const official202 = is202Player(p);
+      out.push({level:"good", text:official202
+        ? (f.dreamBought
+            ? "Прирост дохода $50 000 и своя Мечта — победа!"
+            : "Прирост дохода $50 000 и две другие Мечты — победа!")
+        : (f.dreamBought
+            ? "Своя Мечта куплена — победа!"
+            : "Цель по пассивному доходу достигнута — победа!")});
+    }
     if(!p.dream) out.push({level:"warn", text:
-      "Мечту не выбрала. Задай её кнопкой «Моя мечта» или покупай чужие мечты."});
+      "Мечта не выбрана. Задай её кнопкой «Моя мечта» — иначе победу по Мечте не отследить."});
     if(p.cash < 0) out.push({level:"bad", text:"Наличные ушли в минус."});
     return out;
   }
