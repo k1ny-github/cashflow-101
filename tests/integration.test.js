@@ -110,7 +110,8 @@ function loadUI({initialize = false} = {}){
       "setState(state){S=state;},getState(){return S;}," +
       "prepareImportedGame,reportRatRace,reportFT,renderCardCounters,render202Tools," +
       "renderTable,renderLog,tableActions,deltaPreview," +
-      "actD2Y,actProperty202,actTransfer202,actEditOwnedCard" +
+      "portfolioRow,actD2Y,actProperty202,actTransfer202,actEditOwnedCard," +
+      "actFTTransferBusiness,actContinueRealEstateDeal" +
     "};",
     context
   );
@@ -236,6 +237,36 @@ test("a damaged operation stays in the journal, leaves replay usable, and render
   assert.doesNotThrow(() => harness.ui.renderLog());
   assert.equal(harness.ui.getGame().events[1], null);
   assert.equal(JSON.parse(core.serializeGameSave(game)).events[1], null);
+});
+
+test("replay diagnostics flag unknown, malformed, and missing-player events without rejecting a valid legacy no-op", () => {
+  const core = loadCore();
+  const events = [
+    addPlayer(),
+    {type:"UNKNOWN", id:"unknown", payload:{keep:"verbatim"}},
+    {type:"constructor", id:"prototype-name"},
+    {type:"CASH_IN", id:"malformed", playerId:"p", amount:"not-money"},
+    {type:"SPLIT", id:"legacy-no-op", playerId:"p", assetId:"already-sold", direction:"split"},
+    {type:"CASH_IN", id:"missing-player", playerId:"absent", amount:100},
+    {type:"CASH_IN", id:"valid", playerId:"p", amount:250}
+  ];
+  const state = reduce(core, events);
+  const warningOperations = Array.from(state.eventWarnings, warning => warning.operationNumber);
+  const reloadedEvents = JSON.parse(core.serializeGameSave({...config(core, "202-standard"), events})).events;
+
+  assert.deepEqual(warningOperations, [2, 3, 4, 6]);
+  assert.equal(state.eventWarnings.some(warning => warning.operationNumber === 5), false);
+  assert.equal(state.players[0].cash, 1850);
+  assert.deepEqual(reloadedEvents, events);
+
+  const harness = loadUI();
+  harness.ui.setGame({...config(core, "202-standard"), events, current:"p", screen:"table"});
+  harness.ui.setState(state);
+  harness.ui.renderTable();
+  assert.match(harness.dom.get("alerts").innerHTML, /операц(?:ия|ии)\s*№\s*2/i);
+  assert.match(harness.dom.get("alerts").innerHTML, /операц(?:ия|ии)\s*№\s*3/i);
+  assert.match(harness.dom.get("alerts").innerHTML, /операц(?:ия|ии)\s*№\s*4/i);
+  assert.match(harness.dom.get("alerts").innerHTML, /операц(?:ия|ии)\s*№\s*6/i);
 });
 
 test("negative cashflow survives reload and replay with report, warnings and undo intact", () => {
@@ -428,4 +459,64 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   assert.equal(typeof editForm.preview, "function");
   assert.match(editForm.preview({name:"Дом", price:1000, down:100, mortgage:900, cashflow:250}),
     /Изменение[^]*\+\$150/);
+});
+
+test("Fast Track transfer and pending real-estate continuation preview every affected financial result", () => {
+  const core = loadCore();
+  const transferEvents = [
+    addPlayer("seller"), addPlayer("buyer"),
+    {type:"ENTER_FT", playerId:"seller"},
+    {type:"ENTER_FT", playerId:"buyer"},
+    {type:"CASH_IN", playerId:"seller", amount:1000000},
+    {type:"CASH_IN", playerId:"buyer", amount:1000000},
+    {type:"FT_BUY_BIZ", playerId:"seller", assetId:"biz", name:"Сеть",
+      price:100000, down:10000, mortgage:90000, cashflow:20000}
+  ];
+  const transferHarness = loadUI();
+  const transferGame = setIntegratedGame(transferHarness, core, transferEvents);
+  const buyer = transferGame.state.players.find(item => item.id === "buyer");
+  transferHarness.ui.actFTTransferBusiness(buyer);
+  const transferPreview = transferHarness.captured.forms.at(-1).preview({business:"0"});
+
+  assert.match(transferPreview, /Продавец · seller[^]*Наличные[^]*\$900.?000[^]*\$1.?100.?000/i);
+  assert.match(transferPreview, /Продавец · seller[^]*Изменение за месяц[^]*−\$20.?000/i);
+  assert.match(transferPreview, /Покупатель · buyer[^]*Наличные[^]*\$1.?000.?000[^]*\$800.?000/i);
+  assert.match(transferPreview, /Покупатель · buyer[^]*Изменение за месяц[^]*\+\$20.?000/i);
+
+  const dealEvents = [
+    addPlayer("holder"), addPlayer("drawer"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", cost:0},
+    {type:"OFFER_REAL_ESTATE", playerId:"drawer", dealId:"deal", property:{
+      assetId:"home", name:"Дом", kind:"property", price:1000, down:100, mortgage:900, cashflow:100
+    }},
+    {type:"RESOLVE_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", action:"refuse"}
+  ];
+  const dealHarness = loadUI();
+  const dealGame = setIntegratedGame(dealHarness, core, dealEvents);
+  const drawer = dealGame.state.players.find(item => item.id === "drawer");
+  dealHarness.ui.actContinueRealEstateDeal(drawer);
+  const continuationForm = dealHarness.captured.forms.at(-1);
+
+  assert.equal(typeof continuationForm.preview, "function");
+  assert.match(continuationForm.preview({}), /Наличные[^]*\$1.?600[^]*\$1.?500/i);
+  assert.match(continuationForm.preview({}), /Изменение за месяц[^]*\+\$100/i);
+  assert.equal(dealHarness.captured.events.length, 0);
+  continuationForm.submit({});
+  assert.equal(dealHarness.captured.events[0].type, "CONTINUE_REAL_ESTATE_DEAL");
+});
+
+test("repeated 202 portfolio rows give every label a unique associated control", () => {
+  const ui = loadUI().ui;
+  const html = [
+    ui.portfolioRow("stocks", {symbol:"OK4U", qty:100, price:10, div:1}, 0),
+    ui.portfolioRow("stocks", {symbol:"MYT4U", qty:200, price:20, div:2}, 1),
+    ui.portfolioRow("otherAssets", {name:"Книга", kind:"royalty", cost:100, income:10}, 0)
+  ].join("");
+  const ids = Array.from(html.matchAll(/<(?:input|select)[^>]*\sid="([^"]+)"/g), match => match[1]);
+  const labels = Array.from(html.matchAll(/<label\s+for="([^"]+)"/g), match => match[1]);
+
+  assert.equal(ids.length, 12);
+  assert.equal(labels.length, ids.length);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(labels, ids);
 });

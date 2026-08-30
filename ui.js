@@ -111,8 +111,10 @@ function buildAddPlayerEvent(mode, input){
   return event;
 }
 
-function portfolioRow(kind, row){
-  const field = (key, label, options) => '<div class="f"><label>' + label + '</label><input data-portfolio-field="' + key +
+function portfolioRow(kind, row, index = 0){
+  const controlId = key => "np-portfolio-" + kind + "-" + index + "-" + key;
+  const field = (key, label, options) => '<div class="f"><label for="' + controlId(key) + '">' + label +
+    '</label><input id="' + controlId(key) + '" data-portfolio-field="' + key +
     '" type="' + (options?.text ? "text" : "number") + '"' +
     (options?.text ? "" : ' step="1" inputmode="numeric"') +
     ' value="' + esc(row[key] ?? "") + '"' + (options?.placeholder ? ' placeholder="' + esc(options.placeholder) + '"' : "") + "></div>";
@@ -121,7 +123,8 @@ function portfolioRow(kind, row){
     : kind === "properties"
       ? field("name", "Название", {text:true}) + field("price", "Цена, $") + field("down", "Первоначальный взнос, $") + field("mortgage", "Ипотека, $ (необязательно)") + field("cashflow", "Денежный поток / мес, $")
       : kind === "otherAssets"
-        ? field("name", "Название", {text:true}) + '<div class="f"><label>Вид актива</label><select data-portfolio-field="kind">' +
+        ? field("name", "Название", {text:true}) + '<div class="f"><label for="' + controlId("kind") +
+          '">Вид актива</label><select id="' + controlId("kind") + '" data-portfolio-field="kind">' +
           '<option value="other"' + (row.kind === "royalty" ? "" : " selected") + '>Прочий актив</option>' +
           '<option value="royalty"' + (row.kind === "royalty" ? " selected" : "") + '>Роялти / авторский доход</option></select></div>' +
           field("cost", "Стоимость, $") + field("income", "Доход / мес, $")
@@ -165,10 +168,10 @@ function renderPortfolioRows(){
   $("#np-portfolio-cash").value = draft.cash ?? "";
   $("#np-dream-name").value = draft.dream?.name ?? "";
   $("#np-dream-price").value = draft.dream?.price ?? "";
-  $("#np-stocks").innerHTML = (draft.stocks || []).map(row => portfolioRow("stocks", row)).join("");
-  $("#np-properties").innerHTML = (draft.properties || []).map(row => portfolioRow("properties", row)).join("");
-  $("#np-other-assets").innerHTML = (draft.otherAssets || []).map(row => portfolioRow("otherAssets", row)).join("");
-  $("#np-other-liabilities").innerHTML = (draft.otherLiabilities || []).map(row => portfolioRow("otherLiabilities", row)).join("");
+  $("#np-stocks").innerHTML = (draft.stocks || []).map((row, index) => portfolioRow("stocks", row, index)).join("");
+  $("#np-properties").innerHTML = (draft.properties || []).map((row, index) => portfolioRow("properties", row, index)).join("");
+  $("#np-other-assets").innerHTML = (draft.otherAssets || []).map((row, index) => portfolioRow("otherAssets", row, index)).join("");
+  $("#np-other-liabilities").innerHTML = (draft.otherLiabilities || []).map((row, index) => portfolioRow("otherLiabilities", row, index)).join("");
   $("#np-portfolio").querySelectorAll("input,select").forEach(el => el.addEventListener("input", captureSetupPortfolio));
   $("#np-portfolio").querySelectorAll("[data-remove-portfolio]").forEach(button => button.onclick = () => {
     const row = button.closest("[data-portfolio-row]");
@@ -1368,9 +1371,13 @@ function actFTTransferBusiness(p){
     preview:v => {
       const item = businesses[Number(v.business)];
       if(!item) return "";
+      const event = {type:"FT_TRANSFER_BUSINESS", playerId:p.id, fromPlayerId:item.owner.id,
+        businessId:item.business.id, landingId:"preview"};
       return '<div class="row"><span class="k">Жетонов владения станет</span><span class="v">' +
         (Math.max(1, Number(item.business.ownershipTokens || item.business.tokens || 1)) + 1) +
-        '</span></div>' + deltaPreview(p, -item.price, 0);
+        '</span></div><div class="sub">Продавец · ' + esc(item.owner.name) + "</div>" +
+        eventDeltaPreview(item.owner, event) + '<div class="sub">Покупатель · ' + esc(p.name) + "</div>" +
+        eventDeltaPreview(p, event);
     },
     submit:v => {
       const item = businesses[Number(v.business)];
@@ -1565,9 +1572,16 @@ function actOfferRealEstateDeal(p){
 function actContinueRealEstateDeal(p){
   const deal = S.pendingRealEstateDeal;
   if(!deal || deal.originalPlayerId !== p.id) return;
-  if(!confirm("Все опционы сгорели. Купить исходный объект " + deal.property.name + "?")) return;
-  push({type:"CONTINUE_REAL_ESTATE_DEAL", playerId:p.id, dealId:deal.id,
-    label:"Куплена исходная сделка: " + deal.property.name});
+  const event = {type:"CONTINUE_REAL_ESTATE_DEAL", playerId:p.id, dealId:deal.id,
+    label:"Куплена исходная сделка: " + deal.property.name};
+  openForm({
+    title:"Продолжить исходную сделку", ok:"Купить объект",
+    intro:"Все опционы сгорели. Покупка исходного объекта «" + deal.property.name +
+      "» спишет первоначальный взнос " + money(deal.property.down) + ".",
+    validate:() => p.cash < deal.property.down ? "Наличными не хватает на первоначальный взнос" : null,
+    preview:() => eventDeltaPreview(p, event),
+    submit:() => push(event)
+  });
 }
 
 function actRealEstateOption(p){

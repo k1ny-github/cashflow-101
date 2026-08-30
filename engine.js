@@ -308,6 +308,128 @@ function addProperty(player, asset){
   return true;
 }
 
+/* Диагностика журнала проверяет только форму записанного события и ссылки
+   на игроков. Игровые условия (например, уже проданный актив) остаются в
+   apply: старое корректное событие может законно ничего не изменить. */
+function eventText(value){ return typeof value === "string" && value.trim() !== ""; }
+function eventNumber(value){
+  return value !== null && value !== "" && Number.isFinite(Number(value));
+}
+function eventPositive(value){ return eventNumber(value) && Number(value) > 0; }
+function eventNonNegative(value){ return eventNumber(value) && Number(value) >= 0; }
+function eventObject(value){ return !!value && typeof value === "object" && !Array.isArray(value); }
+function eventAny(ev, keys){ return keys.some(key => ev[key] !== undefined && ev[key] !== null && ev[key] !== ""); }
+function eventOptionalNumber(ev, key){ return ev[key] === undefined || eventNumber(ev[key]); }
+function eventId(ev, keys){ return keys.some(key => eventText(ev[key])); }
+
+const EVENT_DIAGNOSTICS = Object.freeze({
+  ADD_PLAYER:{valid:ev => eventText(ev.playerId) && eventText(ev.professionId)},
+  INSURED_PROPERTY_EVENT:{valid:ev => eventId(ev, ["assetId"]) && eventNonNegative(ev.amount) &&
+    ((Array.isArray(ev.playerIds) && ev.playerIds.length > 0 && ev.playerIds.every(eventText)) || eventText(ev.playerId)),
+    references:ev => Array.isArray(ev.playerIds) ? ev.playerIds : [ev.playerId]},
+  INSURED_EVENT:{valid:ev => eventId(ev, ["assetId"]) && eventNonNegative(ev.amount) &&
+    ((Array.isArray(ev.playerIds) && ev.playerIds.length > 0 && ev.playerIds.every(eventText)) || eventText(ev.playerId)),
+    references:ev => Array.isArray(ev.playerIds) ? ev.playerIds : [ev.playerId]},
+  OPTION_ROUND:{},
+  MARKET_PRICE:{valid:ev => eventText(ev.symbol) && eventNonNegative(ev.price)},
+  COMPANY_BANKRUPTCY:{valid:ev => eventText(ev.symbol)},
+  MARKET_SPLIT:{valid:ev => eventText(ev.symbol) && eventPositive(ev.ratio)},
+
+  PAYDAY:{player:true},
+  BUY_STOCK:{player:true, valid:ev => eventText(ev.symbol) && eventPositive(ev.qty) &&
+    eventNonNegative(ev.price) && eventNumber(ev.div)},
+  BUY_OPTION:{player:true, valid:ev => eventText(ev.symbol) && eventPositive(ev.qty) &&
+    eventPositive(ev.strike) && (eventNonNegative(ev.premium) || eventNonNegative(ev.premiumPerShare))},
+  ADJUST_OPTION_ROUNDS:{player:true, valid:ev => eventId(ev, ["optionId"]) &&
+    Number.isInteger(Number(ev.delta)) && Math.abs(Number(ev.delta)) === 1},
+  EXERCISE_OPTION:{player:true, valid:ev => eventId(ev, ["optionId"]) && eventOptionalNumber(ev, "marketPrice")},
+  OPEN_SHORT:{player:true, valid:ev => eventId(ev, ["shortId"]) && eventText(ev.symbol) &&
+    eventPositive(ev.qty) && eventPositive(ev.openPrice)},
+  CLOSE_SHORT:{player:true, valid:ev => eventId(ev, ["shortId"]) && eventOptionalNumber(ev, "marketPrice")},
+  DECLARE_202_BANKRUPTCY:{player:true, valid:ev => eventOptionalNumber(ev, "proceeds") && eventOptionalNumber(ev, "bankProceeds")},
+  DECLARE_101_BANKRUPTCY:{player:true},
+  SELL_STOCK:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventPositive(ev.qty) && eventNonNegative(ev.price)},
+  SPLIT:{player:true, valid:ev => eventId(ev, ["assetId"])},
+  BUY_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId", "id"]) && eventText(ev.name) &&
+    eventNonNegative(ev.price) && eventNonNegative(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "mortgage")},
+  SELL_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventNonNegative(ev.price)},
+  TAKE_LOAN:{player:true, valid:ev => eventPositive(ev.amount)},
+  REPAY_PROPERTY_MORTGAGE:{player:true, valid:ev => eventId(ev, ["assetId"])},
+  REPAY_BANK:{player:true, valid:ev => eventPositive(ev.amount)},
+  REPAY_DEBT:{player:true, valid:ev => eventText(ev.debt)},
+  CHILD:{player:true},
+  REMOVE_CHILD:{player:true},
+  DOODAD:{player:true, valid:ev => eventNonNegative(ev.amount)},
+  CHARITY:{player:true},
+  DOWNSIZED:{player:true},
+  TICK_CHARITY:{player:true},
+  TICK_SKIP:{player:true},
+  ADD_OTHER_EXPENSE:{player:true, valid:ev => eventNonNegative(ev.amount) &&
+    ((ev.cadence || ev.frequency || ev.mode) !== "monthly" || eventId(ev, ["expenseId", "cardId", "id"]))},
+  END_OTHER_EXPENSE:{player:true, valid:ev => eventId(ev, ["expenseId", "cardId"])},
+  ADD_CARD_COUNTER:{player:true, valid:ev => eventId(ev, ["counterId", "cardId"]) &&
+    Number.isInteger(Number(ev.remaining ?? ev.turns)) && Number(ev.remaining ?? ev.turns) >= 0},
+  ADJUST_CARD_COUNTER:{player:true, valid:ev => eventId(ev, ["counterId", "cardId"]) &&
+    Number.isInteger(Number(ev.delta)) && Math.abs(Number(ev.delta)) === 1},
+  LOSE_CASH_SHARE:{player:true, valid:ev => ev.share === "all" || ev.share === "half"},
+  BUY_REAL_ESTATE_OPTION:{player:true, valid:ev => eventId(ev, ["optionId", "assetId"]) &&
+    (eventAny(ev, ["cost", "price"]) ? eventNonNegative(ev.cost ?? ev.price) : true)},
+  OFFER_REAL_ESTATE:{player:true, valid:ev => {
+    const property = ev.property || ev.asset;
+    return eventObject(property) && eventId(property, ["assetId", "id"]) && eventText(property.name) &&
+      eventNonNegative(property.price) && eventNonNegative(property.down) && eventNumber(property.cashflow) &&
+      eventOptionalNumber(property, "mortgage") && eventId(ev, ["dealId", "assetId"]);
+  }},
+  RESOLVE_REAL_ESTATE_OPTION:{player:true, valid:ev => {
+    const action = ev.action || ev.decision;
+    return eventId(ev, ["optionId", "assetId"]) && ["buy", "refuse", "decline", "transfer", "sell"].includes(action) &&
+      (!["transfer", "sell"].includes(action) || (eventId(ev, ["buyerId", "toPlayerId"]) && eventNonNegative(ev.salePrice)));
+  }, references:ev => ["transfer", "sell"].includes(ev.action || ev.decision) ? [ev.buyerId || ev.toPlayerId] : []},
+  CONTINUE_REAL_ESTATE_DEAL:{player:true},
+  TRANSFER_202_ASSET:{player:true, valid:ev => eventId(ev, ["toPlayerId", "buyerId"]) && eventId(ev, ["assetId"]) &&
+    ["property", "realEstate", "royalty", "realEstateOption", "real-estate-option"].includes(ev.assetType || ev.cardType) &&
+    (ev.price === undefined || eventNonNegative(ev.price)), references:ev => [ev.toPlayerId || ev.buyerId]},
+  ADD_D2Y:{player:true, valid:ev => Number.isInteger(Number(ev.number ?? ev.cardNumber)) &&
+    Number(ev.number ?? ev.cardNumber) >= 1 && Number(ev.number ?? ev.cardNumber) <= 3 &&
+    eventOptionalNumber(ev, "cost") && eventOptionalNumber(ev, "price") && eventOptionalNumber(ev, "income")},
+  BUY_INSURANCE:{player:true, valid:ev => ["expense", "monthlyExpense", "amount"].every(key => eventOptionalNumber(ev, key))},
+  SPLIT_LAND:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventPositive(ev.acresSold) && eventNumber(ev.salePrice)},
+  EXCHANGE_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventObject(ev.replacement || ev.newAsset || ev.property)},
+  UPDATE_OWNED_CARD:{player:true, valid:ev => eventId(ev, ["cardId", "assetId"]) &&
+    eventText(ev.cardType || ev.assetType) && eventObject(ev.patch || ev.changes)},
+  CASH_IN:{player:true, valid:ev => eventNumber(ev.amount)},
+  CASH_OUT:{player:true, valid:ev => eventNumber(ev.amount)},
+  ENTER_FT:{player:true},
+  FT_PAYDAY:{player:true},
+  FT_BUY_BIZ:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventText(ev.name) &&
+    eventNonNegative(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "price") && eventOptionalNumber(ev, "mortgage")},
+  FT_TRANSFER_BUSINESS:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]),
+    references:ev => eventText(ev.fromPlayerId) ? [ev.fromPlayerId] : []},
+  FT_ADD_FRANCHISE:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]) && eventText(ev.landingId)},
+  FT_CHARITY:{player:true, valid:ev => eventOptionalNumber(ev, "amount") && eventOptionalNumber(ev, "dice")},
+  FT_CHOOSE_DICE:{player:true, valid:ev => eventNumber(ev.dice)},
+  SET_DREAM:{player:true, valid:ev => eventText(ev.name) && eventNonNegative(ev.price)},
+  DREAM_TOKEN:{player:true},
+  FT_DREAM:{player:true, valid:ev => eventOptionalNumber(ev, "price")},
+  FT_OTHER_DREAM:{player:true, valid:ev => eventText(ev.ownerId), references:ev => [ev.ownerId]},
+  FT_BUY_OTHER_DREAM:{player:true, valid:ev => eventAny(ev, ["fieldId", "dreamId", "assetId", "name"]) && eventOptionalNumber(ev, "price")},
+  FT_LOSE:{player:true, valid:ev => ev.share === undefined || ev.share === "all" || ev.share === "half"}
+});
+
+function diagnoseEvent(state, ev){
+  if(!ev || typeof ev !== "object" || typeof ev.type !== "string" || !ev.type.trim()){
+    return {reason:"invalid-event"};
+  }
+  if(!Object.prototype.hasOwnProperty.call(EVENT_DIAGNOSTICS, ev.type)) return {reason:"unknown-event"};
+  const rule = EVENT_DIAGNOSTICS[ev.type];
+  if((rule.player && !eventText(ev.playerId)) || (rule.valid && !rule.valid(ev))){
+    return {reason:"invalid-event-shape"};
+  }
+  const references = (rule.player ? [ev.playerId] : []).concat(rule.references ? rule.references(ev) : []);
+  const missingPlayerId = references.find(playerId => !state.players.some(player => player.id === playerId));
+  return missingPlayerId ? {reason:"missing-player", referencedPlayerId:missingPlayerId} : null;
+}
+
 function apply(state, ev, config){
   if(!eventAllowedDuringShortClose(state, ev) || !eventAllowedDuringImmediateOption(state, ev)) return;
 
@@ -1023,12 +1145,13 @@ function reduceEvents(events, config){
     pendingRealEstateDeal:null, eventWarnings:[]
   };
   for(const [index, ev] of events.entries()){
-    if(!ev || typeof ev !== "object" || typeof ev.type !== "string" || !ev.type.trim()){
+    const diagnostic = diagnoseEvent(state, ev);
+    if(diagnostic){
       state.eventWarnings.push({
         operationNumber:index + 1,
         eventId:ev && typeof ev === "object" ? ev.id || null : null,
         eventType:ev && typeof ev === "object" ? ev.type || null : null,
-        reason:"invalid-event"
+        ...diagnostic
       });
       continue;
     }
