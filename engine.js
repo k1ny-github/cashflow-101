@@ -80,9 +80,14 @@ function deriveFT(p){
   const income = p.ft.startIncome + biz - recurringExpenses - insuranceMonthly;
   const bought = !!(p.dream && p.dream.bought);
   const otherDreams = Array.isArray(p.otherDreams) ? p.otherDreams : [];
-  const distinctOtherDreams = new Set(otherDreams.map((dream, index) =>
-    dream && (dream.fieldId ?? dream.id ?? dream.ownerId ?? dream.name) || index)).size;
   const official202 = p.gameMode === "202-standard" || p.gameMode === "202-custom";
+  const victoryDreams = official202
+    ? otherDreams.filter(dream => dream && dream.kind !== "legacy-selected")
+    : otherDreams;
+  const distinctOtherDreams = new Set(victoryDreams.map((dream, index) =>
+    dream && (dream.fieldId ?? dream.id ?? dream.ownerId ?? dream.name) || index)).size;
+  const legacySelectedDreams = new Set(otherDreams.filter(dream => dream && dream.kind === "legacy-selected")
+    .map((dream, index) => dream.fieldId ?? dream.id ?? dream.ownerId ?? dream.name ?? index)).size;
   const won202 = typeof hasWon202 === "function"
     ? hasWon202(p)
     : biz >= 50000 && (bought || distinctOtherDreams >= 2);
@@ -94,7 +99,7 @@ function deriveFT(p){
     otherDreamsBought: distinctOtherDreams,
     /* 101 сохраняет прежнее условие. В 202 расчёт передан отдельным
        официальным правилам с обязательной связкой дохода и Мечты. */
-    won: official202 ? won202 : income >= p.ft.target || bought
+    won: official202 ? won202 : income >= p.ft.target || bought || legacySelectedDreams >= 2
   };
 }
 
@@ -238,6 +243,14 @@ function patchOwnedCard(player, ev){
       : key === "name" || key === "symbol" ? String(ev.patch[key])
       : finiteNumber(ev.patch[key]);
   });
+  if(ev.cardType === "ftBusiness" && is202Player(player)){
+    if(Object.prototype.hasOwnProperty.call(ev.patch, "price")) card.basePrice = card.price;
+    if(Object.prototype.hasOwnProperty.call(ev.patch, "cashflow")){
+      card.baseCashflow = finiteNumber(ev.patch.cashflow);
+      const franchiseCount = Array.isArray(card.franchises) ? card.franchises.length : 0;
+      card.cashflow = card.baseCashflow * (1 + franchiseCount);
+    }
+  }
 }
 
 function oldestRealEstateOption(state){
@@ -910,11 +923,17 @@ function apply(state, ev, config){
        игры — можно выбрасывать одну, две или три кости (стр. 12). */
     case "FT_CHARITY":
       if(!p.ft) return;
+      if((is202Config(config) || is202Player(p)) && p.ft.charity) return;
       p.cash -= is202Config(config) || is202Player(p) ? 100000 : ev.amount;
       p.ft.charity = true;
       if(is202Config(config) || is202Player(p)){
         p.ft.dice = Math.min(3, Math.max(1, Math.round(finiteNumber(ev.dice) || 1)));
       }
+      return;
+
+    case "FT_CHOOSE_DICE":
+      if(!p.ft || !p.ft.charity || !(is202Config(config) || is202Player(p))) return;
+      p.ft.dice = Math.min(3, Math.max(1, Math.round(finiteNumber(ev.dice) || 1)));
       return;
 
     /* Мечта выбирается в начале партии, ещё до крысиных бегов (стр. 2). */
@@ -964,6 +983,7 @@ function apply(state, ev, config){
       owner.dream.otherBoughtBy.push(p.id);
       p.cash -= price;
       p.otherDreams.push({
+        kind:"legacy-selected",
         fieldId:String(owner.dream.fieldId || owner.id),
         ownerId:owner.id,
         ownerName:owner.name,
@@ -987,7 +1007,7 @@ function apply(state, ev, config){
       if(selected || sold) return;
       const price = Math.max(0, finiteNumber(ev.price));
       p.cash -= price;
-      p.otherDreams.push({fieldId, name:String(ev.name || "Мечта"), price});
+      p.otherDreams.push({kind:"unselected", fieldId, name:String(ev.name || "Мечта"), price});
       return;
     }
 

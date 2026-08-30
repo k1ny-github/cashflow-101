@@ -13,7 +13,7 @@
     const dreams = Array.isArray(player?.otherDreams)
       ? player.otherDreams
       : Array.isArray(player?.ft?.otherDreams) ? player.ft.otherDreams : [];
-    const distinctDreams = new Set(dreams.map((dream, index) =>
+    const distinctDreams = new Set(dreams.filter(dream => dream?.kind !== "legacy-selected").map((dream, index) =>
       dream?.fieldId ?? dream?.id ?? dream?.ownerId ?? dream?.name ?? index));
     const dreamGoal = !!player?.dream?.bought || distinctDreams.size >= 2;
     return growth >= 50000 && dreamGoal;

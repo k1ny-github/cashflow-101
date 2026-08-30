@@ -922,23 +922,31 @@ function actFTBiz(p){
 }
 
 function actFTCharity(p){
-  if(p.ft.charity){ alert("Благотворительность уже действует до конца игры."); return; }
   const official202 = is202(G);
+  if(p.ft.charity && !official202){ alert("Благотворительность уже действует до конца игры."); return; }
+  const choosingDice = official202 && p.ft.charity;
   const fixedAmount = 100000;
   openForm({
-    title: "Благотворительность",
-    intro: "Не обязательна. Действует до конца игры: на каждом ходу выбираешь, кидать одну, две или три кости.",
+    title: choosingDice ? "Кости на этом ходу" : "Благотворительность",
+    intro: choosingDice
+      ? "Благотворительность уже оплачена. Выбери одну, две или три кости на этот ход."
+      : "Не обязательна. Действует до конца игры: на каждом ходу выбираешь, кидать одну, две или три кости.",
     fields: official202
       ? [{k:"dice", type:"select", label:"Костей на этом ходу", options:[
           {v:1, t:"1 кость"}, {v:2, t:"2 кости"}, {v:3, t:"3 кости"}
-        ]}]
+        ], value:p.ft.dice || 1}]
       : [{k:"amount", label:"Сумма с карточки, $", value:fixedAmount, step:1000}],
     validate: v => official202
-      ? (p.cash < fixedAmount ? "Наличными не хватает — кредит на дорожке недоступен." : null)
+      ? (!choosingDice && p.cash < fixedAmount ? "Наличными не хватает — кредит на дорожке недоступен." : null)
       : validatePositiveMoney(v.amount, "Сумма") ||
         (p.cash < v.amount ? "Наличными не хватает — кредит на дорожке недоступен." : null),
-    preview: v => deltaPreview(p, -(official202 ? fixedAmount : v.amount), 0),
+    preview: v => deltaPreview(p, choosingDice ? 0 : -(official202 ? fixedAmount : v.amount), 0),
     submit: v => {
+      if(choosingDice){
+        push({type:"FT_CHOOSE_DICE", playerId:p.id, dice:Number(v.dice),
+          label:"Выбрано костей на этом ходу: " + Number(v.dice)});
+        return;
+      }
       const amount = official202 ? fixedAmount : v.amount;
       push({type:"FT_CHARITY", playerId:p.id, amount,
         ...(official202 ? {dice:Number(v.dice)} : {}),
@@ -1184,6 +1192,7 @@ function reportFT(p){
   h += '<div class="sub">Победа</div>';
   h += row("Цель", money(f.target));
   h += row("Осталось набрать", money(f.left));
+  if(p.ft.charity && is202(G)) h += row("Костей на текущем ходу", String(p.ft.dice || 1));
   if(p.dream){
     h += '<div class="sub">Мечта</div>';
     h += row(esc(p.dream.name), p.dream.bought ? "куплена" : money(dreamPrice(p)));
@@ -1685,6 +1694,7 @@ function ownedCard(p, type, id){
 
 function actEditOwnedCard(p, type, id){
   const card = ownedCard(p, type, id); if(!card) return;
+  const officialFTBusiness = type === "ftBusiness" && is202(G);
   const specs = {
     stock:[["symbol", "Символ", "text"], ["qty", "Количество"], ["price", "Цена, $"], ["div", "Дивиденд / мес, $"]],
     property:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первый взнос, $"],
@@ -1695,11 +1705,18 @@ function actEditOwnedCard(p, type, id){
     ftBusiness:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первый взнос, $"],
       ["mortgage", "Ипотека, $"], ["cashflow", "Доход / мес, $"]]
   };
-  const fields = (specs[type] || []).map(([k, label, fieldType]) => fieldType === "kind"
-    ? {k, label, type:"select", value:card[k], options:[
+  const fields = (specs[type] || []).map(([k, label, fieldType]) => {
+    const franchiseCount = Array.isArray(card.franchises) ? card.franchises.length : 0;
+    const value = officialFTBusiness && k === "price" ? card.basePrice ?? card.price
+      : officialFTBusiness && k === "cashflow"
+        ? card.baseCashflow ?? finiteNumber(card.cashflow) / (1 + franchiseCount)
+        : card[k];
+    return fieldType === "kind"
+    ? {k, label, type:"select", value, options:[
       {v:"other", t:"Прочий актив"}, {v:"royalty", t:"Роялти / авторский доход"}
     ]}
-    : {k, label, type:fieldType, value:card[k]});
+    : {k, label, type:fieldType, value};
+  });
   openForm({
     title:"Изменить карточку", fields,
     validate:v => {
@@ -1828,7 +1845,8 @@ function renderTable(){
 
   const badges = [];
   if(ft){
-    if(p.ft.charity) badges.push('<span class="badge">🎲 Благотворительность: 1–3 кости до конца игры</span>');
+    if(p.ft.charity) badges.push('<span class="badge">🎲 Благотворительность: ' +
+      (is202(G) ? "сейчас " + (p.ft.dice || 1) + " из 1–3 костей" : "1–3 кости до конца игры") + "</span>");
   } else {
     if(p.charityTurns > 0) badges.push('<span class="badge">🎲 Благотворительность: ' + p.charityTurns + " хода</span>");
     if(p.skipTurns > 0)    badges.push('<span class="badge">⏭ Пропуск ходов: ' + p.skipTurns + "</span>");
