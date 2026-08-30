@@ -1018,9 +1018,29 @@ function apply(state, ev, config){
 }
 
 function reduceEvents(events, config){
-  const state = {players: [], marketPrices:{}, realEstateOptionSequence:0, pendingRealEstateDeal:null};
-  for(const ev of events){
-    try { apply(state, ev, config); } catch(e){ /* битое событие пропускаем, партия не падает */ }
+  const state = {
+    players: [], marketPrices:{}, realEstateOptionSequence:0,
+    pendingRealEstateDeal:null, eventWarnings:[]
+  };
+  for(const [index, ev] of events.entries()){
+    if(!ev || typeof ev !== "object" || typeof ev.type !== "string" || !ev.type.trim()){
+      state.eventWarnings.push({
+        operationNumber:index + 1,
+        eventId:ev && typeof ev === "object" ? ev.id || null : null,
+        eventType:ev && typeof ev === "object" ? ev.type || null : null,
+        reason:"invalid-event"
+      });
+      continue;
+    }
+    try { apply(state, ev, config); }
+    catch(error){
+      state.eventWarnings.push({
+        operationNumber:index + 1,
+        eventId:ev.id || null,
+        eventType:ev.type || null,
+        reason:error && error.name ? error.name : "replay-error"
+      });
+    }
   }
   return state;
 }

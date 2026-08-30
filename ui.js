@@ -7,9 +7,9 @@
 const KEY = "cashflow-bankir-v1";
 
 /* Версия приложения. При каждом обновлении сайта поднимай её здесь И в номерах
-   ?v= у трёх тегов script в index.html — иначе браузер до десяти минут будет
+   ?v= у всех локальных тегов script в index.html — иначе браузер до десяти минут будет
    показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
-const APP_VERSION = "4 — 24 августа 2026";
+const APP_VERSION = "5 — 30 августа 2026";
 
 let G = { mode: "101", settings: {optionRounds:3, strictLots:false}, events: [], current: null, screen: "setup" };
 let S = { players: [] };            // производное состояние
@@ -30,6 +30,14 @@ function signed(n){
   return (v > 0 ? "+" : v < 0 ? "−" : "") + "$" + Math.abs(v).toLocaleString("ru-RU");
 }
 function cls(n){ return n > 0 ? "pos" : n < 0 ? "neg" : ""; }
+
+function counted(n, one, few, many){
+  const value = Math.abs(Math.trunc(Number(n) || 0));
+  const lastTwo = value % 100;
+  const last = value % 10;
+  const word = lastTwo >= 11 && lastTwo <= 14 ? many : last === 1 ? one : last >= 2 && last <= 4 ? few : many;
+  return value + " " + word;
+}
 
 function validatePositiveMoney(value, label, allowZero){
   if(!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)){
@@ -111,7 +119,7 @@ function portfolioRow(kind, row){
   const fields = kind === "stocks"
     ? field("symbol", "Символ", {text:true, placeholder:"OK4U"}) + field("qty", "Количество") + field("price", "Цена, $") + field("div", "Дивиденд / мес, $")
     : kind === "properties"
-      ? field("name", "Название", {text:true}) + field("price", "Цена, $") + field("down", "Первый взнос, $") + field("mortgage", "Ипотека, $ (необязательно)") + field("cashflow", "Денежный поток / мес, $")
+      ? field("name", "Название", {text:true}) + field("price", "Цена, $") + field("down", "Первоначальный взнос, $") + field("mortgage", "Ипотека, $ (необязательно)") + field("cashflow", "Денежный поток / мес, $")
       : kind === "otherAssets"
         ? field("name", "Название", {text:true}) + '<div class="f"><label>Вид актива</label><select data-portfolio-field="kind">' +
           '<option value="other"' + (row.kind === "royalty" ? "" : " selected") + '>Прочий актив</option>' +
@@ -256,13 +264,13 @@ function push(ev){
 }
 
 function removeEvent(id){
-  const ev = G.events.find(e => e.id === id);
+  const ev = G.events.find(e => e && e.id === id);
   if(!ev) return;
   if(ev.type === "ADD_PLAYER"){
     if(!confirm("Удалить игрока вместе со всеми его операциями?")) return;
-    G.events = G.events.filter(e => e.playerId !== ev.playerId);
+    G.events = G.events.filter(e => !e || e.playerId !== ev.playerId);
   } else {
-    G.events = G.events.filter(e => e.id !== id);
+    G.events = G.events.filter(e => !e || e.id !== id);
   }
   save(); recompute(); render();
 }
@@ -274,7 +282,7 @@ function openForm(cfg){
   const fields = cfg.fields || [];
 
   body.innerHTML =
-    "<h3>" + esc(cfg.title) + "</h3>" +
+    '<h3 id="dlg-title">' + esc(cfg.title) + "</h3>" +
     (cfg.intro ? '<p style="margin:-4px 0 12px;color:var(--muted);font-size:14px">' + cfg.intro + "</p>" : "") +
     fields.map(f => {
       const id = "f-" + f.k;
@@ -330,19 +338,26 @@ function openForm(cfg){
 }
 
 /* Предпросмотр «было → стало» для наличных и потока. */
-function deltaPreview(p, dCash, dFlow){
-  const before = p.ft ? deriveFT(p).income : derive(p).cashflow;
+function deltaPreview(p, dCash, dFlow, beforeOverride, insufficientHint){
+  const showFlowTotal = beforeOverride !== null;
+  const before = showFlowTotal
+    ? (beforeOverride === undefined ? (p.ft ? deriveFT(p).income : derive(p).cashflow) : beforeOverride)
+    : 0;
   const after = before + (dFlow || 0);
   let h = '<div class="row"><span class="k">Наличные</span><span class="v">' +
     money(p.cash) + " → <b class=\"" + cls(p.cash + dCash) + "\">" + money(p.cash + dCash) + "</b></span></div>";
   if(dFlow !== undefined && dFlow !== null){
-    h += '<div class="row"><span class="k">' + (p.ft ? "Доход в День CASHFLOW" : "Денежный поток") +
-      '</span><span class="v">' + money(before) + " → <b class=\"" + cls(after) + "\">" + money(after) + "</b></span></div>";
+    h += '<div class="row"><span class="k">Изменение за месяц</span><span class="v ' + cls(dFlow) + '">' +
+      signed(dFlow) + "/мес</span></div>";
+    if(showFlowTotal){
+      h += '<div class="row"><span class="k">' + (p.ft ? "Доход в День CASHFLOW" : "Денежный поток") +
+        '</span><span class="v">' + money(before) + " → <b class=\"" + cls(after) + "\">" + money(after) + "</b></span></div>";
+    }
   }
-  if(p.cash + dCash < 0){
-    const hint = p.ft
+  if(p.cash + dCash < 0 && insufficientHint !== ""){
+    const hint = insufficientHint || (p.ft
       ? "Наличных не хватает — операция на дорожке недоступна"
-      : "Наличных не хватает — понадобится кредит";
+      : "Наличных не хватает — понадобится кредит");
     h += '<div class="row"><span class="k" style="color:var(--bad)">' + hint + '</span><span class="v"></span></div>';
   }
   return h;
@@ -397,19 +412,19 @@ function actBuyProp(p, kind){
   ] : [];
   openForm({
     title: isBiz ? "Покупка бизнеса" : "Покупка недвижимости",
-    intro: "Наличными платится только первый взнос. Выплаты по ипотеке уже сидят в денежном потоке карточки.",
+    intro: "Наличными платится только первоначальный взнос. Ипотека — это цена минус первоначальный взнос; её выплаты уже учтены в денежном потоке карточки.",
     fields: [
       {k:"name",     type:"text", label:"Название", placeholder: isBiz ? "Автомойка" : "Дом 3/2"},
-      {k:"down",     label:"Первый взнос, $", value:0},
+      {k:"down",     label:"Первоначальный взнос, $", value:0},
       {k:"price",    label:"Цена, $", value:0},
       {k:"cashflow", label:"Денежный поток в месяц, $", value:0},
       ...landFields
     ],
     validate: v => (!v.name.trim() ? "Укажи название" :
-      validatePositiveMoney(v.down, "Первый взнос") ||
+      validatePositiveMoney(v.down, "Первоначальный взнос") ||
       validatePositiveMoney(v.price, "Цена") ||
       (!Number.isFinite(v.cashflow) ? "Денежный поток: укажи число" : null) ||
-      (v.price < v.down ? "Цена меньше первого взноса" : null) ||
+      (v.price < v.down ? "Цена меньше первоначального взноса" : null) ||
       (v.assetKind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null) ||
       (p.cash < v.down ? "Наличными не хватает — сначала возьми кредит." : null)),
     preview: v => '<div class="row"><span class="k">Ипотека (пассив)</span><span class="v">' +
@@ -681,7 +696,7 @@ function actBuyOption(p){
       const total = v.qty * v.premiumPerShare;
       return '<div class="row"><span class="k">Премия всего</span><span class="v">' +
         v.qty + " × " + money(v.premiumPerShare) + " = " + money(total) + "</span></div>" +
-        '<div class="row"><span class="k">Срок</span><span class="v">' + rounds + " тур.</span></div>" +
+        '<div class="row"><span class="k">Срок</span><span class="v">' + counted(rounds, "тур", "тура", "туров") + "</span></div>" +
         deltaPreview(p, -total, 0);
     },
     submit:v => {
@@ -735,7 +750,7 @@ function actOpenShort(p){
         ? "В Standard количество должно быть от 100 до 5000 с шагом 100"
         : "Количество должно быть положительным целым числом") : null),
     preview:v => '<div class="row"><span class="k">Банковский конверт</span><span class="v">' +
-      money(v.qty * v.openPrice) + '</span></div><div class="row"><span class="k">Свободные наличные</span><span class="v">без изменений</span></div>',
+      money(v.qty * v.openPrice) + "</span></div>" + deltaPreview(p, 0, 0, null),
     submit:v => {
       if(!confirmCustomLot(v.qty)) return;
       const symbol = marketSymbol(v.symbol);
@@ -757,8 +772,7 @@ function actCloseShort(p, position){
       : null,
     preview:() => '<div class="row"><span class="k">Цена открытия → выкупа</span><span class="v">' +
       money(position.openPrice) + " → " + money(price) + '</span></div><div class="row total"><span class="k">Результат</span><span class="v ' +
-      cls(result) + '">' + signed(result) + '</span></div><div class="row"><span class="k">Наличные</span><span class="v">' +
-      money(p.cash) + " → <b class=\"" + cls(p.cash + result) + "\">" + money(p.cash + result) + "</b></span></div>" +
+      cls(result) + '">' + signed(result) + "</span></div>" + deltaPreview(p, result, 0, null, "") +
       (result < 0 && p.cash + result < 0
         ? '<div class="row"><span class="k neg">Продай активы или объяви личное банкротство</span><span class="v"></span></div>'
         : ""),
@@ -880,8 +894,10 @@ function actEnterFT(p){
     preview: () =>
       '<div class="row"><span class="k">Пассивный доход</span><span class="v">' + money(d.passive) + "</span></div>" +
       '<div class="row"><span class="k">Округлённый до тысяч × 100</span><span class="v"><b>' + money(start) + "</b></span></div>" +
-      '<div class="row"><span class="k">Подъёмные наличными</span><span class="v">' + money(start) + "</span></div>" +
-      '<div class="row total"><span class="k">Цель для победы</span><span class="v">' + money(start + 50000) + "/мес</span></div>",
+      (is202(G)
+        ? '<div class="row total"><span class="k">Рост бизнес-дохода для победы</span><span class="v">' + money(50000) + "/мес</span></div>"
+        : '<div class="row total"><span class="k">Цель для победы</span><span class="v">' + money(start + 50000) + "/мес</span></div>") +
+      deltaPreview(p, start - p.cash, start - d.cashflow),
     submit: () => push({type:"ENTER_FT", playerId:p.id,
       label:"Вышел на скоростную дорожку, подъёмные " + money(start)})
   });
@@ -900,16 +916,19 @@ function actFTBiz(p){
   const official202 = is202(G);
   openForm({
     title: "Инвестиция в бизнес",
+    intro: official202
+      ? "В Cashflow 202 с наличных списывается полная цена. Первоначальный взнос и ипотека сохраняются как данные карточки."
+      : "С наличных списывается первоначальный взнос; ипотека остаётся в данных карточки.",
     fields: [
       {k:"name", type:"text", label:"Название бизнеса"},
       {k:"price", label:"Цена, $", value:0},
-      {k:"down", label:"Первый взнос, $", value:0},
-      {k:"mortgage", label:"Ипотека, $", value:0},
+      {k:"down", label:"Первоначальный взнос с карточки, $", value:0},
+      {k:"mortgage", label:"Ипотека с карточки, $", value:0},
       {k:"cashflow", label:"Денежный поток в месяц, $", value:0}
     ],
     validate: v => (!v.name.trim() ? "Укажи название" :
       validatePositiveMoney(v.price, "Цена") ||
-      validatePositiveMoney(v.down, "Первый взнос", true) ||
+      validatePositiveMoney(v.down, "Первоначальный взнос", true) ||
       validatePositiveMoney(v.mortgage, "Ипотека", true) ||
       validatePositiveMoney(v.cashflow, "Денежный поток", true) ||
       (p.cash < (official202 ? v.price : v.down)
@@ -1095,7 +1114,7 @@ function renderSetup(){
     sel.innerHTML = PROFESSIONS.map(p => '<option value="' + p.id + '">' + esc(p.title) + "</option>").join("");
   }
   mode.value = G.mode;
-  const hasPlayerEvent = G.events.some(ev => ev.type === "ADD_PLAYER");
+  const hasPlayerEvent = G.events.some(ev => ev && ev.type === "ADD_PLAYER");
   mode.disabled = hasPlayerEvent;
   $("#np-mode-hint").textContent = hasPlayerEvent
     ? "Режим зафиксирован после добавления первого игрока: " + modeTitle(G.mode) + "."
@@ -1115,6 +1134,7 @@ function renderSetup(){
     " · на старте " + money(startingCash(tmp));
 
   const list = $("#setup-list");
+  $("#setup-warnings").innerHTML = eventWarningsHTML();
   $("#setup-list-card").classList.toggle("hide", !S.players.length);
   list.innerHTML = S.players.map(p =>
     '<div class="row"><span class="k">' + esc(p.name) + " — " + esc(p.professionTitle) +
@@ -1157,7 +1177,7 @@ function reportRatRace(p){
   h += '<div class="sub">Активы</div>';
   h += row("Сбережения", money(p.savings));
   p.stocks.forEach(s => h += row(esc(s.symbol) + " × " + s.qty, money(s.price) + " / шт", "", edit("stock", s.id)));
-  p.props.forEach(a => h += row(esc(a.name), "взнос " + money(a.down) + " · цена " + money(a.price), "", edit("property", a.id)));
+  p.props.forEach(a => h += row(esc(a.name), "первоначальный взнос " + money(a.down) + " · цена " + money(a.price), "", edit("property", a.id)));
   p.otherAssets.forEach(a => h += row(esc(a.name), money(a.cost), "", edit("otherAsset", a.id)));
   p.d2yCards.forEach(card => h += row("D2Y №" + card.number, signed(card.income) + "/мес"));
 
@@ -1183,15 +1203,20 @@ function reportFT(p){
         " · Жетонов владения: " + (b.ownershipTokens || 1) +
         " · Франшиз: " + (Array.isArray(b.franchises) ? b.franchises.length : 0)
       : signed(b.cashflow) + " · цена " + money(b.price) +
-        " · взнос " + money(b.down) + " · ипотека " + money(b.mortgage);
+        " · первоначальный взнос " + money(b.down) + " · ипотека " + money(b.mortgage);
     h += row(esc(b.name), details, "", edit("ftBusiness", b.id));
   });
   p.otherExpenses.filter(item => item.active).forEach(item => h += row(esc(item.name), money(-item.amount) + "/мес", "",
     edit("otherExpense", item.id) + ' <button class="btn danger" data-end-expense="' + esc(item.id) + '">Завершить</button>'));
   h += row("Итого доход", money(f.income), " total");
   h += '<div class="sub">Победа</div>';
-  h += row("Цель", money(f.target));
-  h += row("Осталось набрать", money(f.left));
+  if(is202(G)){
+    h += row("Рост бизнес-дохода", money(50000));
+    h += row("Осталось увеличить", money(f.left));
+  } else {
+    h += row("Цель", money(f.target));
+    h += row("Осталось набрать", money(f.left));
+  }
   if(p.ft.charity && is202(G)) h += row("Костей на текущем ходу", String(p.ft.dice || 1));
   if(p.dream){
     h += '<div class="sub">Мечта</div>';
@@ -1206,6 +1231,21 @@ function reportFT(p){
   return h;
 }
 
+function eventDeltaPreview(p, event){
+  const nextState = reduceEvents(G.events.concat(event), G);
+  const next = nextState.players.find(item => item.id === p.id);
+  if(!next) return deltaPreview(p, 0, 0);
+  const beforeFlow = p.ft ? deriveFT(p).income : derive(p).cashflow;
+  const afterFlow = next.ft ? deriveFT(next).income : derive(next).cashflow;
+  return deltaPreview(p, next.cash - p.cash, afterFlow - beforeFlow);
+}
+
+function eventWarningsHTML(){
+  return (S.eventWarnings || []).map(w =>
+    '<div class="note warn">Операция № ' + w.operationNumber +
+    " повреждена и не применена при расчёте. Запись сохранена в журнале без изменений.</div>").join("");
+}
+
 function renderCardCounters(p){
   if(p.ft && is202(G)) return "";
   let html = '<div class="sub tools202-title">Счётчики карточек</div>';
@@ -1213,7 +1253,7 @@ function renderCardCounters(p){
   p.cardCounters.forEach(counter => {
     const tone = counter.remaining === 0 ? " bad" : counter.remaining === 1 ? " warn" : "";
     html += '<div class="instrument' + tone + '"><div class="instrument-head"><b>' + esc(counter.name) +
-      '</b><span>' + (counter.remaining === 0 ? "истёк" : counter.remaining + " ход.") + '</span></div>' +
+      '</b><span>' + (counter.remaining === 0 ? "истёк" : counted(counter.remaining, "ход", "хода", "ходов")) + '</span></div>' +
       '<div class="instrument-actions"><button class="btn" data-counter-minus="' + esc(counter.id) + '"' +
       (counter.remaining === 0 ? " disabled" : "") + '>−1</button><button class="btn" data-counter-plus="' +
       esc(counter.id) + '">+1</button></div></div>';
@@ -1425,7 +1465,7 @@ function actCardCounter(p){
     ],
     validate:v => (!Number.isInteger(v.remaining) || v.remaining < 0 ? "Остаток должен быть целым неотрицательным числом" :
       (v.preset === "custom" && !v.name.trim() ? "Укажи название" : null)),
-    preview:v => '<div class="row"><span class="k">Осталось</span><span class="v">' + v.remaining + " ход.</span></div>",
+    preview:v => '<div class="row"><span class="k">Осталось</span><span class="v">' + counted(v.remaining, "ход", "хода", "ходов") + "</span></div>",
     submit:v => {
       const name = v.preset === "custom" ? v.name.trim() : v.preset;
       push({type:"ADD_CARD_COUNTER", playerId:p.id, counterId:uid(), name, remaining:v.remaining,
@@ -1474,7 +1514,11 @@ function actD2Y(p){
       (p.cash < v.cost ? "Наличными не хватает — сначала возьми кредит." : null) ||
       ((Number(v.number) === 1 || Number(v.number) === 3) && p.d2yCards.some(card => card.number === Number(v.number))
         ? "Такая карточка D2Y уже есть" : null),
-    preview:v => deltaPreview(p, -v.cost, 0),
+    preview:v => {
+      const before = d2yIncome(p.d2yCards || []);
+      const after = d2yIncome((p.d2yCards || []).concat({number:Number(v.number), income:v.income}));
+      return deltaPreview(p, -v.cost, after - before);
+    },
     submit:v => push({type:"ADD_D2Y", playerId:p.id, cardId:uid(), number:Number(v.number),
       cost:v.cost, income:v.income, label:"Добавлена D2Y №" + v.number + " · " + signed(v.income) + "/мес"})
   });
@@ -1487,7 +1531,7 @@ function optionPropertyFields(){
       {v:"property", t:"Недвижимость"}, {v:"land", t:"Земля"}
     ]},
     {k:"price", label:"Цена, $", value:0},
-    {k:"down", label:"Первый взнос, $", value:0},
+    {k:"down", label:"Первоначальный взнос, $", value:0},
     {k:"mortgage", label:"Ипотека, $", value:0},
     {k:"cashflow", label:"Денежный поток / мес, $", value:0},
     {k:"acres", label:"Площадь земли, акров", value:0},
@@ -1569,7 +1613,7 @@ function actRealEstateOption(p){
     ],
     validate:v => {
       if(v.action === "refuse") return null;
-      if(v.action === "buy") return p.cash < deal.property.down ? "Наличными не хватает на первый взнос" : null;
+      if(v.action === "buy") return p.cash < deal.property.down ? "Наличными не хватает на первоначальный взнос" : null;
       const buyer = buyers.find(player => player.id === v.buyerId);
       return validatePositiveMoney(v.salePrice, "Цена опциона", true) ||
         (buyer && buyer.cash < v.salePrice ? "У покупателя не хватает наличных" : null);
@@ -1605,6 +1649,14 @@ function actTransfer202(p){
     ],
     validate:v => validatePositiveMoney(v.price, "Цена", true) ||
       (buyers.find(player => player.id === v.buyerId)?.cash < v.price ? "У покупателя не хватает наличных" : null),
+    preview:v => {
+      const [assetType, assetId] = v.asset.split(":");
+      const event = {type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId,
+        assetType, assetId, price:v.price};
+      const buyer = buyers.find(player => player.id === v.buyerId);
+      return '<div class="sub">Продавец · ' + esc(p.name) + "</div>" + eventDeltaPreview(p, event) +
+        (buyer ? '<div class="sub">Покупатель · ' + esc(buyer.name) + "</div>" + eventDeltaPreview(buyer, event) : "");
+    },
     submit:v => {
       const [assetType, assetId] = v.asset.split(":");
       push({type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId, assetType, assetId,
@@ -1638,6 +1690,29 @@ function actProperty202(p){
       if(v.operation === "insured") return validatePositiveMoney(v.salePrice, "Убыток");
       return !v.name.trim() ? "Укажи новый объект" : validatePositiveMoney(v.price, "Цена") ||
         (asset.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null);
+    },
+    preview:v => {
+      const asset = p.props.find(item => item.id === v.assetId); if(!asset) return "";
+      let event;
+      if(v.operation === "repay"){
+        event = {type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:asset.id};
+      } else if(v.operation === "split"){
+        event = {type:"SPLIT_LAND", playerId:p.id, assetId:asset.id,
+          acresSold:v.acresSold, salePrice:v.salePrice};
+      } else if(v.operation === "insured"){
+        const jointKey = asset.jointId || asset.id;
+        const playerIds = S.players.filter(owner => owner.props.some(item =>
+          item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
+        event = {type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds,
+          assetId:jointKey, amount:v.salePrice};
+      } else {
+        event = {type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
+          replacement:{assetId:"preview", name:v.name.trim(), kind:asset.kind,
+            price:v.price, down:v.down, mortgage:v.mortgage, cashflow:v.cashflow,
+            ...(asset.kind === "land" ? {acres:v.acres,
+              removeCashflowOnSplit:v.removeCashflow === "remove"} : {})}};
+      }
+      return eventDeltaPreview(p, event);
     },
     submit:v => {
       const asset = p.props.find(item => item.id === v.assetId); if(!asset) return;
@@ -1676,7 +1751,9 @@ function actBankruptcy(p, mode){
     fields:[{k:"proceeds", label:"Выручка Банка по официальным правилам, $", value:0}],
     validate:v => validatePositiveMoney(v.proceeds, "Выручка", true),
     preview:v => '<div class="row"><span class="k">Сначала в кредит банка</span><span class="v">' +
-      money(Math.min(v.proceeds, p.bankLoan)) + '</span></div><div class="row"><span class="k">Непокрытый кредит</span><span class="v">будет списан</span></div>',
+      money(Math.min(v.proceeds, p.bankLoan)) + '</span></div><div class="row"><span class="k">Непокрытый кредит</span><span class="v">будет списан</span></div>' +
+      eventDeltaPreview(p, {type:"DECLARE_202_BANKRUPTCY", playerId:p.id,
+        reason:"personal", proceeds:v.proceeds}),
     submit:v => push({type:"DECLARE_202_BANKRUPTCY", playerId:p.id, reason:"personal", proceeds:v.proceeds,
       label:"Личное банкротство Cashflow 202"})
   });
@@ -1697,12 +1774,12 @@ function actEditOwnedCard(p, type, id){
   const officialFTBusiness = type === "ftBusiness" && is202(G);
   const specs = {
     stock:[["symbol", "Символ", "text"], ["qty", "Количество"], ["price", "Цена, $"], ["div", "Дивиденд / мес, $"]],
-    property:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первый взнос, $"],
+    property:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первоначальный взнос, $"],
       ["mortgage", "Ипотека, $"], ["cashflow", "Денежный поток / мес, $"]],
     otherAsset:[["name", "Название", "text"], ["kind", "Вид актива", "kind"], ["cost", "Стоимость, $"], ["income", "Доход / мес, $"]],
     otherLiability:[["name", "Название", "text"], ["balance", "Остаток, $"], ["expense", "Расход / мес, $"]],
     otherExpense:[["name", "Название", "text"], ["amount", "Расход / мес, $"]],
-    ftBusiness:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первый взнос, $"],
+    ftBusiness:[["name", "Название", "text"], ["price", "Цена, $"], ["down", "Первоначальный взнос, $"],
       ["mortgage", "Ипотека, $"], ["cashflow", "Доход / мес, $"]]
   };
   const fields = (specs[type] || []).map(([k, label, fieldType]) => {
@@ -1723,6 +1800,8 @@ function actEditOwnedCard(p, type, id){
       const textKey = type === "stock" ? "symbol" : "name";
       return !String(v[textKey] || "").trim() ? "Укажи название" : null;
     },
+    preview:v => eventDeltaPreview(p, {type:"UPDATE_OWNED_CARD", playerId:p.id,
+      cardType:type, cardId:id, patch:v}),
     submit:v => push({type:"UPDATE_OWNED_CARD", playerId:p.id, cardType:type, cardId:id, patch:v,
       label:"Изменена карточка: " + (v.name || v.symbol)})
   });
@@ -1832,7 +1911,7 @@ function renderTable(){
 
   $("#hdr-sub").textContent = modeTitle(G.mode) + " · " + p.name + " · " + (ft ? "скоростная дорожка" : p.professionTitle);
 
-  $("#alerts").innerHTML = warnings(p)
+  $("#alerts").innerHTML = eventWarningsHTML() + warnings(p)
     .map(w => '<div class="note ' + w.level + '">' + w.text + "</div>").join("");
 
   $("#big").innerHTML =
@@ -1841,15 +1920,15 @@ function renderTable(){
     (ft
       ? '<div style="grid-column:1/-1"><span>До победы</span><b>' + money(d.left) + "/мес</b></div>"
       : '<div style="grid-column:1/-1"><span>Пассивный доход против общего расхода</span><b class="' +
-        (d.canEscape ? "pos" : "") + '">' + money(d.passive) + " / " + money(d.totalExpenses) + "</b></div>");
+        ((is202(G) ? canEscape202(d) : d.canEscape) ? "pos" : "") + '">' + money(d.passive) + " / " + money(d.totalExpenses) + "</b></div>");
 
   const badges = [];
   if(ft){
     if(p.ft.charity) badges.push('<span class="badge">🎲 Благотворительность: ' +
       (is202(G) ? "сейчас " + (p.ft.dice || 1) + " из 1–3 костей" : "1–3 кости до конца игры") + "</span>");
   } else {
-    if(p.charityTurns > 0) badges.push('<span class="badge">🎲 Благотворительность: ' + p.charityTurns + " хода</span>");
-    if(p.skipTurns > 0)    badges.push('<span class="badge">⏭ Пропуск ходов: ' + p.skipTurns + "</span>");
+    if(p.charityTurns > 0) badges.push('<span class="badge">🎲 Благотворительность: ' + counted(p.charityTurns, "ход", "хода", "ходов") + "</span>");
+    if(p.skipTurns > 0)    badges.push('<span class="badge">⏭ Пропуск: ' + counted(p.skipTurns, "ход", "хода", "ходов") + "</span>");
     if(p.children > 0)     badges.push('<span class="badge">👶 Детей: ' + p.children + "</span>");
   }
   if(p.dream){
@@ -1862,7 +1941,7 @@ function renderTable(){
   const acts = tableActions(p, ft, d);
 
   $("#acts").innerHTML = acts.map((a, i) =>
-    '<button class="act' + (a[3] ? " go" : "") + '" data-a="' + i + '"><i>' + a[0] + "</i>" + a[1] + "</button>").join("");
+    '<button class="act' + (a[3] ? " go" : "") + '" data-a="' + i + '"><i aria-hidden="true">' + a[0] + "</i>" + a[1] + "</button>").join("");
   $("#acts").querySelectorAll("[data-a]").forEach(el =>
     el.onclick = () => acts[Number(el.dataset.a)][2]());
 
@@ -1876,10 +1955,16 @@ function renderLog(){
   const names = {};
   S.players.forEach(p => names[p.id] = p.name);
   const items = G.events.slice().reverse();
-  $("#log").innerHTML = items.length ? items.map(ev =>
-    '<li><span class="t">' + esc(ev.label || ev.type) +
-    "<em>" + esc(names[ev.playerId] || "—") + "</em></span>" +
-    '<button class="x" data-del="' + ev.id + '">✕</button></li>').join("")
+  $("#log").innerHTML = items.length ? items.map((ev, reverseIndex) => {
+    const operationNumber = G.events.length - reverseIndex;
+    if(!ev || typeof ev !== "object"){
+      return '<li><span class="t">Повреждённая операция № ' + operationNumber +
+        "<em>Запись сохранена без изменений</em></span></li>";
+    }
+    return '<li><span class="t">' + esc(ev.label || ev.type || ("Повреждённая операция № " + operationNumber)) +
+      "<em>" + esc(names[ev.playerId] || "—") + "</em></span>" +
+      (ev.id ? '<button class="x" aria-label="Удалить операцию" data-del="' + esc(ev.id) + '">✕</button>' : "") + "</li>";
+  }).join("")
     : '<li class="empty">Пока пусто.</li>';
   $("#log").querySelectorAll("[data-del]").forEach(el =>
     el.onclick = () => removeEvent(el.dataset.del));
@@ -1957,7 +2042,7 @@ function init(){
     const config = createGameConfig($("#np-mode").value, {optionRounds:$("#np-rounds").value});
     G.mode = config.mode;
     G.settings = config.settings;
-    save(); renderSetup();
+    save(); render();
   });
   $("#np-rounds").addEventListener("input", () => {
     if(G.mode !== "202-custom") return;
