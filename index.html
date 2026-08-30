@@ -32,12 +32,15 @@ header{
   padding:10px 0 8px;border-bottom:1px solid var(--line);
 }
 .bar{display:flex;align-items:center;gap:8px}
-.bar h1{font-size:17px;margin:0;flex:1;letter-spacing:.2px}
+.bar h1{font-size:17px;margin:0;flex:1;min-width:0;letter-spacing:.2px}
 .bar h1 small{color:var(--muted);font-weight:400;font-size:13px}
 button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{
+  outline:3px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px;
+}
 .btn{
   border:1px solid var(--line);background:var(--card);border-radius:10px;
-  padding:8px 12px;font-size:14px;
+  padding:8px 12px;min-height:40px;font-size:14px;
 }
 .btn:active{transform:scale(.97)}
 .btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
@@ -59,8 +62,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin:12px 0}
 .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);margin:0 0 10px}
 
-.big{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.big div{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.big{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.big div{min-width:0;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px}
 .big span{display:block;font-size:12px;color:var(--muted);margin-bottom:2px}
 .big b{font-size:26px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
 .pos{color:var(--good)} .neg{color:var(--bad)}
@@ -68,13 +71,15 @@ button{font:inherit;color:inherit;cursor:pointer}
 .row{display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-variant-numeric:tabular-nums}
 .row.total{border-top:1px solid var(--line);margin-top:6px;padding-top:8px;font-weight:700}
 .row .k{color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.row .v{white-space:nowrap}
+.row .v{min-width:0;white-space:nowrap}
+.row .v .btn{padding:4px 7px;font-size:12px;margin-left:4px}
+.row.actions .v{white-space:normal;display:flex;justify-content:flex-end;align-items:center;gap:4px;flex-wrap:wrap}
 .sub{font-size:12px;color:var(--muted);margin:8px 0 2px;text-transform:uppercase;letter-spacing:.6px}
 
 .acts{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
 .act{
   border:1px solid var(--line);background:var(--card);border-radius:12px;
-  padding:12px 8px;text-align:center;font-size:13px;line-height:1.25;
+  padding:12px 8px;min-height:44px;text-align:center;font-size:13px;line-height:1.25;
 }
 .act i{display:block;font-style:normal;font-size:20px;margin-bottom:4px}
 .act.go{border-color:var(--accent);color:var(--accent);font-weight:600}
@@ -87,16 +92,28 @@ button{font:inherit;color:inherit;cursor:pointer}
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .badge{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:var(--card)}
 
+.tools202-title{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.tools202-empty{padding:12px 0;text-align:left}
+.instrument{border:1px solid var(--line);border-radius:12px;padding:11px;margin:9px 0;background:var(--bg)}
+.instrument.good{border-color:var(--good);background:var(--good-bg)}
+.instrument.warn{border-color:var(--warn);background:var(--warn-bg)}
+.instrument.bad{border-color:var(--bad);background:var(--bad-bg)}
+.instrument-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.instrument-head b{min-width:0;overflow-wrap:anywhere}
+.instrument-head span{font-size:12px;color:var(--muted)}
+.instrument-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+.instrument-actions .btn{padding:7px 11px}
+
 .log{list-style:none;margin:0;padding:0}
 .log li{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
-.log .t{flex:1;font-size:14px}
+.log .t{flex:1;min-width:0;font-size:14px;overflow-wrap:anywhere}
 .log .t em{display:block;font-style:normal;font-size:12px;color:var(--muted)}
-.log .x{border:0;background:transparent;color:var(--muted);font-size:18px;padding:0 4px;line-height:1}
+.log .x{border:0;background:transparent;color:var(--muted);font-size:18px;padding:0 4px;line-height:1;min-width:44px;min-height:44px}
 
 dialog{
   border:0;border-radius:16px 16px 0 0;padding:0;background:var(--card);color:var(--ink);
-  width:100%;max-width:760px;margin:auto auto 0;
+  width:100%;max-width:760px;max-height:94vh;overflow:auto;margin:auto auto 0;
 }
 dialog::backdrop{background:rgba(0,0,0,.5)}
 @media(min-width:720px){dialog{border-radius:16px;margin:auto}}
@@ -115,6 +132,21 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .dlg-btns .btn{flex:1;padding:13px}
 .empty{color:var(--muted);text-align:center;padding:26px 10px;font-size:14px}
 .hide{display:none!important}
+@media(max-width:420px){
+  .wrap{padding-inline:8px}
+  .bar{gap:4px}
+  .bar h1 small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .big{gap:8px}
+  .big div{padding:10px}
+  .big b{font-size:clamp(20px,6.4vw,24px);overflow-wrap:anywhere}
+  .row{align-items:flex-start}
+  .row .k,.row .v{white-space:normal;overflow-wrap:anywhere}
+  .row .v{text-align:right}
+  .instrument-head{align-items:flex-start}
+  .dlg{padding-inline:12px}
+  .dlg-btns{flex-wrap:wrap}
+  .dlg-btns .btn{min-width:120px}
+}
 </style>
 </head>
 <body>
@@ -124,13 +156,14 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
   <div class="bar">
     <h1>CASHFLOW <small id="hdr-sub">банкир</small></h1>
     <button class="btn ghost" id="nav-log">Журнал</button>
-    <button class="btn ghost" id="nav-menu">⋯</button>
+    <button class="btn ghost" id="nav-menu" aria-label="Меню партии">⋯</button>
   </div>
   <div class="chips" id="chips"></div>
 </header>
 
 <!-- ЭКРАН: НАСТРОЙКА -->
 <section id="scr-setup">
+  <div id="setup-warnings" role="status" aria-live="polite"></div>
   <div class="card">
     <h2>Новая партия</h2>
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">
@@ -156,6 +189,33 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
       <select id="np-prof"></select>
       <div class="hint" id="np-hint"></div>
     </div>
+    <div id="np-portfolio" class="hide">
+      <div class="sub">Начальный инвестиционный портфель 202</div>
+      <div class="f">
+        <label for="np-portfolio-cash">Дополнительные наличные с карточки, $</label>
+        <input id="np-portfolio-cash" type="number" min="0" step="1" inputmode="numeric" value="0">
+      </div>
+      <div class="f">
+        <label for="np-dream-name">Мечта с розового поля</label>
+        <input id="np-dream-name" type="text" placeholder="Кругосветное путешествие">
+      </div>
+      <div class="f">
+        <label for="np-dream-price">Первоначальная стоимость мечты, $</label>
+        <input id="np-dream-price" type="number" min="1" step="1000" inputmode="numeric" value="">
+      </div>
+      <div class="sub">Акции</div>
+      <div id="np-stocks"></div>
+      <button class="btn" type="button" data-add-portfolio="stocks">+ Добавить пакет акций</button>
+      <div class="sub">Недвижимость и бизнес</div>
+      <div id="np-properties"></div>
+      <button class="btn" type="button" data-add-portfolio="properties">+ Добавить объект</button>
+      <div class="sub">Прочие активы</div>
+      <div id="np-other-assets"></div>
+      <button class="btn" type="button" data-add-portfolio="otherAssets">+ Добавить актив</button>
+      <div class="sub">Прочие пассивы</div>
+      <div id="np-other-liabilities"></div>
+      <button class="btn" type="button" data-add-portfolio="otherLiabilities">+ Добавить пассив</button>
+    </div>
     <button class="btn primary" id="np-add" style="width:100%;padding:13px">Добавить игрока</button>
   </div>
   <div class="card" id="setup-list-card">
@@ -166,7 +226,7 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 
 <!-- ЭКРАН: СТОЛ -->
 <section id="scr-table" class="hide">
-  <div id="alerts"></div>
+  <div id="alerts" role="status" aria-live="polite"></div>
   <div class="big" id="big"></div>
   <div id="badges" class="badges"></div>
   <div class="card">

@@ -124,12 +124,18 @@ Commit: `fix: закрыть ошибки расчётов Cashflow 101`
 **Files:**
 - Create: `game-config.js`
 - Create: `tests/config.test.js`
+- Modify: `save.js`
+- Modify: `tests/save.test.js`
+- Modify: `engine.js`
 - Modify: `index.html`
 - Modify: `ui.js`
 
 **Interfaces:**
 - Produces: `createGameConfig(mode, input)`, `is202(config)`, `optionRoundLimit(config)`.
-- Extends `ADD_PLAYER` with `initialPortfolio: {cash, stocks, properties, otherAssets, otherLiabilities}`.
+- Extends `ADD_PLAYER` with an atomic snapshot of profession, selected Dream and
+  `initialPortfolio: {cash, stocks, properties, otherAssets, otherLiabilities}`.
+- Extends `GameSaveV2` with temporary `setupPortfolio` while keeping the same
+  localStorage key and `schemaVersion: 2`.
 
 - [ ] **Step 1: Write failing configuration tests**
 
@@ -149,9 +155,23 @@ The selector locks after the first `ADD_PLAYER` event. Existing games show 101 w
 
 - [ ] **Step 4: Add the Cashflow 202 initial-portfolio setup step**
 
-The step supports repeated stock and real-estate rows. The engine expands the
-portfolio atomically when applying `ADD_PLAYER`; cash is included in starting
-cash, and portfolio cashflow is included before calculating starting cash.
+The step appears only in 202 and supports repeated stock, real-estate/business,
+other-asset and other-liability rows. Stock fields are symbol, quantity, price
+and dividend. Property fields are name, price, down payment, explicit mortgage
+and monthly cashflow. Other assets contain name, cost and monthly income; other
+liabilities contain name, balance and monthly expense.
+
+The engine expands the portfolio atomically when applying `ADD_PLAYER`; all
+created holdings carry `source:"initial-portfolio"`. No purchase events are
+created for these entries. The card's down payment is recorded as invested
+capital and is not deducted from cash a second time. Mortgage defaults to
+`price - down`, but an explicitly entered mortgage is authoritative. Negative
+starting-asset cashflow is valid and must not be clamped.
+
+Starting cash equals profession cashflow after adding portfolio income and
+portfolio expenses, plus profession savings and portfolio cash. The complete
+profession snapshot, portfolio and selected Dream are stored in the single
+`ADD_PLAYER` event.
 
 ```js
 test("202 starting cash includes portfolio cash and passive income", () => {
@@ -163,9 +183,21 @@ test("202 starting cash includes portfolio cash and passive income", () => {
 });
 ```
 
-- [ ] **Step 5: Render the active mode in the header/menu**
+Add tests for negative portfolio cashflow, an explicit mortgage differing
+from `price - down`, other assets/liabilities, source tags, atomic Dream and
+the absence of purchase events.
 
-- [ ] **Step 6: Run tests and commit**
+- [ ] **Step 5: Make the setup draft lossless and reload-safe**
+
+Update portfolio cash on every `input`, read it directly from the field again
+immediately before adding the player, and save the draft after every change.
+Changing profession must preserve a non-empty portfolio unless the user
+explicitly confirms clearing it. Reload/import/export retain `mode`,
+`settings`, `events`, `current` and temporary `setupPortfolio`.
+
+- [ ] **Step 6: Render the active mode in the header/menu**
+
+- [ ] **Step 7: Run tests and commit**
 
 Commit: `feat: добавить режимы 101 и 202`
 
@@ -180,7 +212,13 @@ Commit: `feat: добавить режимы 101 и 202`
 
 **Interfaces:**
 - Produces: `optionPayout(option, marketPrice)`, `shortResult(position, marketPrice)`, `validateLot(qty, strict)`, `marketEffects(state, symbol, price)`.
-- New events: `BUY_OPTION`, `OPTION_ROUND`, `EXERCISE_OPTION`, `MARKET_PRICE`, `MARKET_SPLIT`, `COMPANY_BANKRUPTCY`, `OPEN_SHORT`, `CLOSE_SHORT`.
+- New events: `BUY_OPTION`, `ADJUST_OPTION_ROUNDS`, `EXERCISE_OPTION`,
+  `MARKET_PRICE`, `MARKET_SPLIT`, `COMPANY_BANKRUPTCY`, `OPEN_SHORT`,
+  `CLOSE_SHORT`. Legacy `OPTION_ROUND` remains replay-only.
+
+New `BUY_OPTION` stores `premiumPerShare` and `premiumTotal`; a legacy
+`BUY_OPTION.premium` is interpreted as the already-total premium so old games
+do not change.
 
 - [ ] **Step 1: Write failing tests for call, put, straddle and premium**
 
@@ -195,17 +233,42 @@ test("put payout follows the book example", () => {
 
 - [ ] **Step 2: Write failing tests for three rounds and Custom rounds**
 
-At `remaining:1`, `OPTION_ROUND` makes the option inactive. Removing that event restores it.
+At `remaining:1`, a new per-option `ADJUST_OPTION_ROUNDS` decrement makes that
+option inactive. Removing the adjustment event restores it. Incrementing by
+one repairs an accidental manual decrement. Legacy `OPTION_ROUND` is tested
+only for unchanged replay.
 
 - [ ] **Step 3: Write failing tests for short profit, loss and mandatory close**
 
 - [ ] **Step 4: Implement pure market calculations in `market202.js`**
 
+Standard accepts only OK4U/MYT4U and quantities 100–5000 in steps of 100.
+Custom uses its configured duration and allows a nonstandard lot only after a
+visible confirmation. Premium is labeled per share and acquisition deducts
+`qty * premiumPerShare` exactly once. Calls and puts pay intrinsic value only;
+premium is neither deducted nor returned at exercise. New options cannot be
+opened on the Fast Track.
+
 - [ ] **Step 5: Apply market events atomically to all players**
+
+A global price event exposes profitable active options, ordinary stock and
+shorts that must close. A 2:1 split adjusts every player's stocks, options and
+shorts, doubling quantities and halving price, strike and per-share premium.
+A reverse split performs the inverse with one documented integer rule for odd
+quantities. Company bankruptcy zeroes stock and calls while puts and shorts
+settle against market price 0; all affected players are previewed before the
+event is confirmed.
+
+Opening a short stores symbol, quantity and opening price. Sale proceeds stay
+in a bank envelope and never increase free cash. The next matching market
+price requires close with `qty * (openPrice - buybackPrice)`. A short loss may
+not use a bank loan; offer asset sale or personal bankruptcy instead.
 
 - [ ] **Step 6: Add `Инструменты 202` cards and market dialogs**
 
 Each option shows call/put, ticker, premium, strike, quantity, remaining rounds, `−1`, `+1`, and contextual exercise action. Each short shows entry price and the next matching market event requires close confirmation.
+Profit is green, a final option round is yellow, and expiry or mandatory short
+closure is red.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -223,9 +286,20 @@ Commit: `feat: добавить опционы и короткие позици�
 
 **Interfaces:**
 - Produces: `d2yIncome(cards)`, `splitLand(asset, acresSold, salePrice)`, `insuranceExpense(player)`.
-- New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`.
+- New events: `BUY_REAL_ESTATE_OPTION`, `RESOLVE_REAL_ESTATE_OPTION`, `TRANSFER_202_ASSET`, `ADD_D2Y`, `BUY_INSURANCE`, `SPLIT_LAND`, `EXCHANGE_PROPERTY`, `DECLARE_202_BANKRUPTCY`, `UPDATE_OWNED_CARD`.
+- Cross-mode expense events: `ADD_OTHER_EXPENSE`, `END_OTHER_EXPENSE`.
+- Cross-mode counter events: `ADD_CARD_COUNTER`, `ADJUST_CARD_COUNTER`;
+  legacy `TICK_CHARITY` and `TICK_SKIP` remain replay-only.
+- Cross-mode cash-loss event: `LOSE_CASH_SHARE`; legacy `FT_LOSE` remains
+  replay-only.
+- Cross-mode correction event: `REMOVE_CHILD`; legacy `CHILD` remains the add
+  event and is replayed unchanged.
 
 - [ ] **Step 1: Write failing tests for real-estate option priority and expiry**
+
+The option applies to the next real-estate card. Multiple holders resolve in
+purchase order. A holder buys the object, sells the option to another player
+who must use it immediately, or refuses and loses the option.
 
 - [ ] **Step 2: Write failing tests for D2Y card limits and income activation**
 
@@ -238,11 +312,74 @@ test("D2Y 3 pays only with 1 and at least one 2", () => {
 
 - [ ] **Step 3: Write failing tests for insurance, land split and exchange**
 
+Insurance is a permanent monthly expense and protects all real estate,
+including jointly held property; insured loss is a separate event. Land may
+be split only when its mortgage has first been fully repaid, then remaining
+area and book value reduce proportionally and obsolete cashflow is removed
+when the card says so. Exchange atomically replaces property with the same
+type, removes old mortgage/cashflow, writes the new values and moves no cash.
+Also test `Прочий расход`: `once` reduces cash exactly once, while `monthly`
+creates a named recurring expense that reduces every derived monthly cashflow
+without an immediate duplicate cash charge. Ending the recurring expense is a
+separate reversible journal event.
+Add tests for a generic card counter and per-counter `-1`/`+1` adjustments:
+only the selected counter changes, zero is expired, and deleting the latest
+adjustment event restores the preceding remainder.
+Test the official Downsized interaction explicitly: it sets two skipped turns
+and immediately zeroes any remaining Rat Race charity turns. Add cash-loss
+tests for `half` and `all` in both 101 and 202 without bank borrowing.
+Test that `REMOVE_CHILD` decrements the child count and child expenses, never
+goes below zero, and is undone by deleting that journal event.
+Add end-to-end negative-cashflow cases in 101 and 202: negative portfolio or
+recurring-expense cashflow remains negative, PAYDAY subtracts that amount from
+cash without clamping, warnings still render, and the relevant sale/bankruptcy
+paths remain available when cash cannot cover the next month.
+
 - [ ] **Step 4: Write failing tests for 202 bankruptcy restrictions**
+
+202 personal bankruptcy sells permitted assets to the Bank, directs proceeds
+to bank credit first, writes off the uncovered remainder, applies three
+skipped turns, and blocks credit for deals while retaining it only for
+mandatory costs and downsizing. D2Y and royalties are excluded. Keep the 101
+procedure separately testable and do not reinterpret old journals.
 
 - [ ] **Step 5: Implement the asset calculations and events**
 
+Player-to-player deals may transfer real estate, royalties and an unused real
+estate option, but not shares, stock options, shorts or D2Y. The seller's bank
+loan never transfers. D2Y #1 and #3 are limited to one, #2 is unlimited; #2
+income requires #1 and #3 income requires #1 plus at least one #2. D2Y cannot
+be transferred or sold in bankruptcy.
+
 - [ ] **Step 6: Add focused UI forms and report rows**
+
+У каждой принадлежащей игроку карточки актива есть действие `Изменить`.
+Для недвижимости и бизнеса редактируются название, цена, первый взнос,
+ипотека и денежный поток; для акций — символ, количество, цена и дивиденд;
+для прочих активов и пассивов — их финансовые поля. Изменение хранится
+отдельным событием `UPDATE_OWNED_CARD`, поэтому удаление этой строки журнала
+возвращает прежние данные. Биржевые опционы, шорты и срок их действия через
+эту общую форму не редактируются — для них остаются специализированные действия.
+
+The `Прочий расход` form is available in both 101 and 202 and asks whether the
+expense is one-time or monthly. A monthly expense appears as its own report
+row, can be edited as an owned expense card, and can be ended without deleting
+its history; deleting the end event restores it.
+
+Add a compact `Счётчики карточек` section in both modes with presets for
+Благотворительность, Увольнение/пропуск, Стихийное бедствие and a custom name.
+Each counter has remaining turns and separate `−1` / `+1` controls. One turn
+is yellow and zero is red/expired. Existing legacy charity/skip state remains
+visible and keeps its old event semantics.
+
+Both modes expose `Развод — потерять все наличные` and one combined action
+`Налоги / Суд — потерять половину наличных`. The same actions are available on
+the Rat Race and Fast Track; they use `LOSE_CASH_SHARE`, while old `FT_LOSE`
+events keep replaying unchanged.
+
+The Rat Race `Ребёнок` action offers `Добавить` or `Убрать`. Removing writes a
+separate `REMOVE_CHILD` event, immediately recalculates child expenses and is
+disabled at zero children.
 
 - [ ] **Step 7: Run tests and commit**
 
@@ -275,9 +412,28 @@ Neither +50,000 alone nor dreams alone wins. +50,000 plus own dream wins; +50,00
 
 - [ ] **Step 3: Write failing tests for business resale multiplier and franchise**
 
+Fast Track businesses store base price, cashflow, ownership tokens and
+franchises. Purchase uses full price. Another player's landing forces a sale
+at the token-adjusted price. An owner landing again may create at most one
+franchise during that turn.
+
 - [ ] **Step 4: Implement the pure calculations and events**
 
+In 202 entry closes the Rat Race report and tools. In 101 retain the existing
+escape condition and result. The 202 victory condition is an AND: business
+income growth of at least $50,000 plus either the player's selected Dream or
+two distinct unselected Dreams.
+
 - [ ] **Step 5: Add Fast Track UI for unselected dreams, resale and franchise**
+
+`Купить мечту` opens a first choice between `Моя мечта` and `Другая мечта`.
+Other Dreams are stored as a list; the same board field cannot be sold twice,
+and buying more than two distinct other Dreams remains allowed.
+Another player's selected Dream can receive a token but can never be bought.
+Only the owner may buy a selected Dream, for `base * (1 + foreignTokens)`.
+An unselected Dream is purchased by the first player who lands there and then
+becomes unavailable table-wide. Keep the house-rule Fast Track charity at
+$100,000 with selectable 1, 2 or 3 dice through the end of the game.
 
 - [ ] **Step 6: Run tests and commit**
 
@@ -297,15 +453,31 @@ Commit: `feat: реализовать Скоростную дорожку 202`
 
 - [ ] **Step 1: Write an end-to-end event-log test for each mode**
 
-The 101 fixture must equal its pre-change report. Standard must expire at 3; Custom at its configured limit. Import/export round-trips all metadata.
+The 101 fixture must equal its pre-change report. Standard must expire at 3;
+Custom at its configured limit. Import/export round-trips mode, settings,
+events, current and unfinished setupPortfolio. A damaged event keeps the game
+loadable but produces a clear warning with its operation number instead of
+being swallowed silently.
+Include a reload/replay scenario whose monthly cashflow is negative and verify
+cash, report totals, warnings and undo remain usable.
 
 - [ ] **Step 2: Add versioned script tags and update `APP_VERSION`**
 
 - [ ] **Step 3: Verify all forms at 375px viewport**
 
 Check setup, option cards, market modal, short close, property option, D2Y and Fast Track victory without clipped controls or horizontal scrolling.
+Also check multiple card counters with independent `−1`/`+1` buttons.
+
+Cashflow 101 hides every 202 control. The header updates mode immediately.
+Before each financial operation show resulting cash and monthly-flow change;
+fix labels and word forms, especially down payment versus mortgage. Include
+the owned-card edit and undo flow in desktop and mobile checks.
 
 - [ ] **Step 4: Update README with official 202 behavior and limitations**
+
+Document the official rules, the $100,000 charity house rule, lack of
+multi-device synchronization, and that unsupported physical cards remain
+manual rather than coming from a complete card database.
 
 - [ ] **Step 5: Run syntax, unit and integration checks**
 
@@ -317,7 +489,7 @@ Run: `node --test tests/*.test.js`
 
 Commit: `docs: описать режимы и правила Cashflow 202`
 
-### Task 8: Финальная проверка и публикация
+### Task 8: Финальная проверка без публикации
 
 **Files:**
 - Modify only if verification reveals a defect.
@@ -330,8 +502,7 @@ Commit: `docs: описать режимы и правила Cashflow 202`
 
 - [ ] **Step 4: Review the diff for unrelated or destructive changes**
 
-- [ ] **Step 5: Push `main` to `origin`**
+- [ ] **Step 5: Stop with the verified isolated branch and present release options**
 
-- [ ] **Step 6: Wait for GitHub Pages and verify versioned scripts and all three modes on the live URL**
-
-Expected URL: `https://k1ny-github.github.io/cashflow-101/`
+Do not merge, push or publish as part of implementation. Those are separate
+side effects to perform only after the user chooses the release option.
