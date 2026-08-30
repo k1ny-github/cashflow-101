@@ -59,7 +59,8 @@ function loadUI(){
       "reportFT:typeof reportFT === 'function' ? reportFT : null," +
       "renderCardCounters:typeof renderCardCounters === 'function' ? renderCardCounters : null," +
       "actInsurance:typeof actInsurance === 'function' ? actInsurance : null," +
-      "actEditOwnedCard:typeof actEditOwnedCard === 'function' ? actEditOwnedCard : null" +
+      "actEditOwnedCard:typeof actEditOwnedCard === 'function' ? actEditOwnedCard : null," +
+      "actDownsized:typeof actDownsized === 'function' ? actDownsized : null" +
     "};",
     context
   );
@@ -311,6 +312,21 @@ test("card counters adjust independently, expire at zero and undo by replay", ()
   assert.deepEqual(Array.from(restored.cardCounters, counter => counter.remaining), [1, 4]);
 });
 
+test("new Downsized events expose an adjustable two-turn skip counter", () => {
+  const events = [
+    addPlayer("p"),
+    {type:"DOWNSIZED", playerId:"p", counterId:"skip-turns"},
+    {type:"ADJUST_CARD_COUNTER", playerId:"p", counterId:"skip-turns", delta:-1}
+  ];
+  const adjusted = game(events).players[0];
+  const restored = game(events.slice(0, -1)).players[0];
+
+  assert.equal(adjusted.skipTurns, 1);
+  assert.equal(adjusted.cardCounters.find(counter => counter.id === "skip-turns").remaining, 1);
+  assert.equal(restored.skipTurns, 2);
+  assert.equal(restored.cardCounters.find(counter => counter.id === "skip-turns").remaining, 2);
+});
+
 test("Downsized cancels Rat Race charity and starts two skipped turns", () => {
   const p = game([
     addPlayer("p"),
@@ -384,7 +400,8 @@ test("official 202 bankruptcy sells eligible assets, protects D2Y and royalties,
       qty:100, strike:20, premiumPerShare:1},
     {type:"BUY_REAL_ESTATE_OPTION", playerId:"p", optionId:"property-option", cost:0},
     {type:"ADD_D2Y", playerId:"p", cardId:"d2y", number:1, income:100, cost:0},
-    {type:"DECLARE_202_BANKRUPTCY", playerId:"p", reason:"personal", proceeds:3000},
+    {type:"DECLARE_202_BANKRUPTCY", playerId:"p", reason:"personal", proceeds:3000,
+      counterId:"skip-turns"},
     {type:"TAKE_LOAN", playerId:"p", amount:1000, purpose:"deal"},
     {type:"TAKE_LOAN", playerId:"p", amount:1000, purpose:"mandatory"},
     {type:"TAKE_LOAN", playerId:"p", amount:1000, purpose:"downsized"}
@@ -396,18 +413,20 @@ test("official 202 bankruptcy sells eligible assets, protects D2Y and royalties,
   assert.equal(p.bankLoan, 2000);
   assert.equal(p.creditRestricted, true);
   assert.equal(p.skipTurns, 3);
+  assert.equal(p.cardCounters.find(counter => counter.id === "skip-turns").remaining, 3);
 });
 
 test("101 bankruptcy remains a separate procedure", () => {
   const p = game([
     addPlayer("p"),
     {type:"BUY_PROPERTY", playerId:"p", ...property({down:200})},
-    {type:"DECLARE_101_BANKRUPTCY", playerId:"p"}
+    {type:"DECLARE_101_BANKRUPTCY", playerId:"p", counterId:"skip-turns"}
   ], "101").players[0];
 
   assert.equal(p.props.length, 0);
   assert.equal(p.cash, 1500);
   assert.equal(p.skipTurns, 3);
+  assert.equal(p.cardCounters.find(counter => counter.id === "skip-turns").remaining, 3);
   assert.equal(p.creditRestricted, false);
 });
 
@@ -585,7 +604,31 @@ test("UI report renders editable owned cards, recurring expense controls and cou
   assert.match(report, /data-end-expense="monthly"/);
   assert.match(counters, /instrument warn[^]*Один ход/);
   assert.match(counters, /instrument bad[^]*Истёк/);
-  assert.match(counters, /data-counter-minus="warning"[^]*data-counter-plus="warning"/);
+  assert.match(counters, /data-counter-minus="warning"[^]*aria-label="Уменьшить счётчик Один ход на один ход"/);
+  assert.match(counters, /data-counter-plus="warning"[^]*aria-label="Увеличить счётчик Один ход на один ход"/);
+});
+
+test("owned-card editor rejects negative financial values but allows negative cashflow", () => {
+  const harness = loadUI();
+  const p = game([
+    addPlayer("p"),
+    {type:"BUY_PROPERTY", playerId:"p", ...property()}
+  ]).players[0];
+  harness.ui.actEditOwnedCard(p, "property", "home");
+
+  assert.match(harness.submit({name:"Дом", price:1000, down:100, mortgage:-1, cashflow:100}), /Ипотека/);
+  assert.equal(harness.submit({name:"Дом", price:1000, down:100, mortgage:900, cashflow:-250}), null);
+});
+
+test("Downsized UI records the adjustable skip counter identifier", () => {
+  const harness = loadUI();
+  harness.ui.actDownsized(game([addPlayer("p")]).players[0]);
+
+  const error = harness.submit({});
+
+  assert.equal(error, null);
+  assert.equal(harness.captured.events[0].type, "DOWNSIZED");
+  assert.equal(harness.captured.events[0].counterId, "skip-turns");
 });
 
 test("insurance has a usable UI action that records a monthly policy expense", () => {

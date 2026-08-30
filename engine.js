@@ -336,10 +336,15 @@ const EVENT_DIAGNOSTICS = Object.freeze({
   MARKET_SPLIT:{valid:ev => eventText(ev.symbol) && eventPositive(ev.ratio)},
 
   PAYDAY:{player:true},
-  BUY_STOCK:{player:true, valid:ev => eventText(ev.symbol) && eventPositive(ev.qty) &&
-    eventNonNegative(ev.price) && eventNumber(ev.div)},
-  BUY_OPTION:{player:true, valid:ev => eventText(ev.symbol) && eventPositive(ev.qty) &&
-    eventPositive(ev.strike) && (eventNonNegative(ev.premium) || eventNonNegative(ev.premiumPerShare))},
+  BUY_STOCK:{player:true, valid:ev => eventText(ev.symbol) && eventNumber(ev.qty) &&
+    eventNumber(ev.price) && eventNumber(ev.div),
+    compatibilityWarning:ev => Number(ev.qty) <= 0 || Number(ev.price) < 0 || Number(ev.div) < 0},
+  BUY_OPTION:{player:true, valid:ev => {
+    const legacy = ev.premium !== undefined && ev.premiumPerShare === undefined && ev.premiumTotal === undefined;
+    return eventText(ev.symbol) && eventPositive(ev.qty) && eventPositive(ev.strike) &&
+      (legacy ? eventNumber(ev.premium) : eventNonNegative(ev.premiumPerShare));
+  }, compatibilityWarning:ev => ev.premium !== undefined && ev.premiumPerShare === undefined &&
+    ev.premiumTotal === undefined && Number(ev.premium) < 0},
   ADJUST_OPTION_ROUNDS:{player:true, valid:ev => eventId(ev, ["optionId"]) &&
     Number.isInteger(Number(ev.delta)) && Math.abs(Number(ev.delta)) === 1},
   EXERCISE_OPTION:{player:true, valid:ev => eventId(ev, ["optionId"]) && eventOptionalNumber(ev, "marketPrice")},
@@ -348,18 +353,22 @@ const EVENT_DIAGNOSTICS = Object.freeze({
   CLOSE_SHORT:{player:true, valid:ev => eventId(ev, ["shortId"]) && eventOptionalNumber(ev, "marketPrice")},
   DECLARE_202_BANKRUPTCY:{player:true, valid:ev => eventOptionalNumber(ev, "proceeds") && eventOptionalNumber(ev, "bankProceeds")},
   DECLARE_101_BANKRUPTCY:{player:true},
-  SELL_STOCK:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventPositive(ev.qty) && eventNonNegative(ev.price)},
+  SELL_STOCK:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventNumber(ev.qty) && eventNumber(ev.price),
+    compatibilityWarning:ev => Number(ev.qty) <= 0 || Number(ev.price) < 0},
   SPLIT:{player:true, valid:ev => eventId(ev, ["assetId"])},
   BUY_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId", "id"]) && eventText(ev.name) &&
-    eventNonNegative(ev.price) && eventNonNegative(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "mortgage")},
-  SELL_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventNonNegative(ev.price)},
-  TAKE_LOAN:{player:true, valid:ev => eventPositive(ev.amount)},
+    eventNumber(ev.price) && eventNumber(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "mortgage"),
+    compatibilityWarning:ev => Number(ev.price) < 0 || Number(ev.down) < 0 ||
+      (ev.mortgage !== undefined && Number(ev.mortgage) < 0)},
+  SELL_PROPERTY:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventNumber(ev.price),
+    compatibilityWarning:ev => Number(ev.price) < 0},
+  TAKE_LOAN:{player:true, valid:ev => eventNumber(ev.amount), compatibilityWarning:ev => Number(ev.amount) <= 0},
   REPAY_PROPERTY_MORTGAGE:{player:true, valid:ev => eventId(ev, ["assetId"])},
-  REPAY_BANK:{player:true, valid:ev => eventPositive(ev.amount)},
+  REPAY_BANK:{player:true, valid:ev => eventNumber(ev.amount), compatibilityWarning:ev => Number(ev.amount) <= 0},
   REPAY_DEBT:{player:true, valid:ev => eventText(ev.debt)},
   CHILD:{player:true},
   REMOVE_CHILD:{player:true},
-  DOODAD:{player:true, valid:ev => eventNonNegative(ev.amount)},
+  DOODAD:{player:true, valid:ev => eventNumber(ev.amount), compatibilityWarning:ev => Number(ev.amount) < 0},
   CHARITY:{player:true},
   DOWNSIZED:{player:true},
   TICK_CHARITY:{player:true},
@@ -402,13 +411,16 @@ const EVENT_DIAGNOSTICS = Object.freeze({
   ENTER_FT:{player:true},
   FT_PAYDAY:{player:true},
   FT_BUY_BIZ:{player:true, valid:ev => eventId(ev, ["assetId"]) && eventText(ev.name) &&
-    eventNonNegative(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "price") && eventOptionalNumber(ev, "mortgage")},
+    eventNumber(ev.down) && eventNumber(ev.cashflow) && eventOptionalNumber(ev, "price") && eventOptionalNumber(ev, "mortgage"),
+    compatibilityWarning:ev => Number(ev.down) < 0 || (ev.price !== undefined && Number(ev.price) < 0) ||
+      (ev.mortgage !== undefined && Number(ev.mortgage) < 0)},
   FT_TRANSFER_BUSINESS:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]),
     references:ev => eventText(ev.fromPlayerId) ? [ev.fromPlayerId] : []},
   FT_ADD_FRANCHISE:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]) && eventText(ev.landingId)},
   FT_CHARITY:{player:true, valid:ev => eventOptionalNumber(ev, "amount") && eventOptionalNumber(ev, "dice")},
   FT_CHOOSE_DICE:{player:true, valid:ev => eventNumber(ev.dice)},
-  SET_DREAM:{player:true, valid:ev => eventText(ev.name) && eventNonNegative(ev.price)},
+  SET_DREAM:{player:true, valid:ev => eventText(ev.name) && eventNumber(ev.price),
+    compatibilityWarning:ev => Number(ev.price) < 0},
   DREAM_TOKEN:{player:true},
   FT_DREAM:{player:true, valid:ev => eventOptionalNumber(ev, "price")},
   FT_OTHER_DREAM:{player:true, valid:ev => eventText(ev.ownerId), references:ev => [ev.ownerId]},
@@ -427,7 +439,26 @@ function diagnoseEvent(state, ev){
   }
   const references = (rule.player ? [ev.playerId] : []).concat(rule.references ? rule.references(ev) : []);
   const missingPlayerId = references.find(playerId => !state.players.some(player => player.id === playerId));
-  return missingPlayerId ? {reason:"missing-player", referencedPlayerId:missingPlayerId} : null;
+  if(missingPlayerId) return {reason:"missing-player", referencedPlayerId:missingPlayerId};
+  return rule.compatibilityWarning && rule.compatibilityWarning(ev)
+    ? {reason:"legacy-invalid-value", applied:true}
+    : null;
+}
+
+function setSkipCounter(player, ev, turns, keepLonger){
+  const remaining = keepLonger ? Math.max(player.skipTurns, turns) : turns;
+  player.skipTurns = remaining;
+  if(!ev.counterId) return;
+  const existing = player.cardCounters.find(counter => counter.id === ev.counterId);
+  if(existing){
+    existing.name = ev.counterName || "Пропуск ходов";
+    existing.kind = "skip";
+    existing.remaining = remaining;
+    existing.expired = remaining === 0;
+  } else {
+    player.cardCounters.push({id:ev.counterId, name:ev.counterName || "Пропуск ходов",
+      kind:"skip", remaining, expired:remaining === 0});
+  }
 }
 
 function apply(state, ev, config){
@@ -622,9 +653,8 @@ function apply(state, ev, config){
 
     case "CLOSE_SHORT": {
       const position = p.shorts.find(item => item.id === ev.shortId);
-      if(!position) return;
-      const recorded = Number(ev.marketPrice);
-      const marketPrice = position.mustClose ? position.closePrice : recorded;
+      if(!position || !position.mustClose) return;
+      const marketPrice = position.closePrice;
       if(!Number.isFinite(marketPrice)) return;
       const result = shortResult(position, marketPrice);
       if(result < 0 && p.cash + result < 0) return;
@@ -640,7 +670,7 @@ function apply(state, ev, config){
         const result = locked.reduce((sum, position) => sum + shortResult(position, position.closePrice), 0);
         p.cash = Math.max(0, p.cash + result);
         p.shorts = p.shorts.filter(position => !position.mustClose);
-        p.skipTurns = Math.max(p.skipTurns, 3);
+        setSkipCounter(p, ev, 3, true);
         return;
       }
       if(!allows202Event(config)) return;
@@ -654,7 +684,7 @@ function apply(state, ev, config){
       p.options = [];
       p.realEstateOptions = [];
       p.otherAssets = p.otherAssets.filter(asset => asset.kind === "royalty");
-      p.skipTurns = Math.max(p.skipTurns, 3);
+      setSkipCounter(p, ev, 3, true);
       p.creditRestricted = true;
       return;
     }
@@ -666,7 +696,7 @@ function apply(state, ev, config){
       p.cash += proceeds;
       p.props = [];
       p.otherAssets = [];
-      p.skipTurns = Math.max(p.skipTurns, 3);
+      setSkipCounter(p, ev, 3, true);
       return;
     }
 
@@ -762,7 +792,7 @@ function apply(state, ev, config){
     /* Увольнение отменяет привилегии благотворительности (стр. 4). */
     case "DOWNSIZED":
       p.cash -= derive(p).totalExpenses;
-      p.skipTurns = 2;
+      setSkipCounter(p, ev, 2, false);
       p.charityTurns = 0;
       return;
 
@@ -803,6 +833,7 @@ function apply(state, ev, config){
       if(!counter || !Number.isInteger(delta) || Math.abs(delta) !== 1) return;
       counter.remaining = Math.max(0, counter.remaining + delta);
       counter.expired = counter.remaining === 0;
+      if(counter.kind === "skip") p.skipTurns = counter.remaining;
       return;
     }
 
@@ -1153,7 +1184,7 @@ function reduceEvents(events, config){
         eventType:ev && typeof ev === "object" ? ev.type || null : null,
         ...diagnostic
       });
-      continue;
+      if(!diagnostic.applied) continue;
     }
     try { apply(state, ev, config); }
     catch(error){

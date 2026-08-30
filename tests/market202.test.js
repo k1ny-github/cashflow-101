@@ -222,7 +222,7 @@ test("option card disables +1 at the configured duration cap", () => {
 
   const html = ui.marketUI.renderTools(state.players[0]);
 
-  assert.match(html, /data-option-plus="o" disabled/);
+  assert.match(html, /data-option-plus="o"[^>]* disabled/);
 });
 
 test("legacy OPTION_ROUND still decrements every open option", () => {
@@ -268,6 +268,19 @@ test("the next matching market price locks a mandatory short close", () => {
 
   assert.equal(p.shorts[0].mustClose, true);
   assert.equal(p.shorts[0].closePrice, 20);
+});
+
+test("an unlocked short cannot be settled from a stale table price", () => {
+  const state = game([
+    addPlayer("p"),
+    {type:"MARKET_PRICE", symbol:"OK4U", price:5},
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:100, openPrice:30},
+    {type:"CLOSE_SHORT", playerId:"p", shortId:"sh", marketPrice:5}
+  ]);
+
+  assert.equal(state.players[0].cash, 1600);
+  assert.equal(state.players[0].shorts.length, 1);
+  assert.equal(state.players[0].shorts[0].mustClose, false);
 });
 
 test("closing a mandatory short realizes its locked result", () => {
@@ -420,10 +433,26 @@ test("UI disables unrelated option and unlocked-short controls during mandatory 
 
   const html = ui.marketUI.renderTools(state.players[0]);
 
-  assert.match(html, /data-option-minus="option" disabled/);
-  assert.match(html, /data-option-exercise="option" disabled/);
-  assert.match(html, /data-short-close="other" disabled/);
+  assert.match(html, /data-option-minus="option"[^>]* disabled/);
+  assert.match(html, /data-option-exercise="option"[^>]* disabled/);
+  assert.doesNotMatch(html, /data-short-close="other"/);
   assert.doesNotMatch(html, /data-short-close="locked" disabled/);
+});
+
+test("UI does not offer closing a short before the next matching market price", () => {
+  const ui = loadUI();
+  const state = game([
+    addPlayer("p"),
+    {type:"MARKET_PRICE", symbol:"OK4U", price:5},
+    {type:"OPEN_SHORT", playerId:"p", shortId:"sh", symbol:"OK4U", qty:100, openPrice:30}
+  ]);
+  ui.marketUI.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  ui.marketUI.setState(state);
+
+  const html = ui.marketUI.renderTools(state.players[0]);
+
+  assert.match(html, /Шорт · OK4U[^]*ждёт следующую цену/i);
+  assert.doesNotMatch(html, /data-short-close="sh"/);
 });
 
 test("market effects expose stock, active options and shorts for all players", () => {

@@ -110,7 +110,7 @@ function loadUI({initialize = false} = {}){
       "setState(state){S=state;},getState(){return S;}," +
       "prepareImportedGame,reportRatRace,reportFT,renderCardCounters,render202Tools," +
       "renderTable,renderLog,tableActions,deltaPreview," +
-      "portfolioRow,actD2Y,actProperty202,actTransfer202,actEditOwnedCard," +
+      "portfolioRow,actD2Y,actProperty202,actTransfer202,actEditOwnedCard,actBuyProp," +
       "actFTTransferBusiness,actContinueRealEstateDeal" +
     "};",
     context
@@ -459,6 +459,51 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   assert.equal(typeof editForm.preview, "function");
   assert.match(editForm.preview({name:"Дом", price:1000, down:100, mortgage:900, cashflow:250}),
     /Изменение[^]*\+\$150/);
+});
+
+test("property purchases allow zero down payments and land splits reject silent no-ops", () => {
+  const core = loadCore();
+  const buyHarness = loadUI();
+  const buyGame = setIntegratedGame(buyHarness, core, [addPlayer()]);
+  buyHarness.ui.actBuyProp(buyGame.player, "property");
+  const buyForm = buyHarness.captured.forms.at(-1);
+  assert.equal(buyForm.validate({name:"Дом без взноса", down:0, price:1000, cashflow:100,
+    assetKind:"property", acres:0}), null);
+
+  const ordinaryHarness = loadUI();
+  const ordinary = setIntegratedGame(ordinaryHarness, core, [addPlayer(),
+    {type:"BUY_PROPERTY", playerId:"p", assetId:"home", name:"Дом", kind:"property",
+      price:1000, down:100, mortgage:0, cashflow:100}
+  ]);
+  ordinaryHarness.ui.actProperty202(ordinary.player);
+  assert.match(ordinaryHarness.captured.forms.at(-1).validate({operation:"split", assetId:"home",
+    acresSold:1, salePrice:100}), /земельный участок/i);
+
+  const landHarness = loadUI();
+  const land = setIntegratedGame(landHarness, core, [addPlayer(),
+    {type:"BUY_PROPERTY", playerId:"p", assetId:"land", name:"Участок", kind:"land",
+      price:1000, down:1000, mortgage:0, cashflow:0, acres:10}
+  ]);
+  landHarness.ui.actProperty202(land.player);
+  const landForm = landHarness.captured.forms.at(-1);
+  assert.match(landForm.validate({operation:"split", assetId:"land", acresSold:10, salePrice:100}), /меньше 10/i);
+});
+
+test("mobile journal undo and option counters expose usable accessible controls", () => {
+  const css = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+  assert.match(css, /\.log \.x\{[^}]*min-width:44px[^}]*min-height:44px/);
+
+  const core = loadCore();
+  const state = reduce(core, [addPlayer(),
+    {type:"BUY_OPTION", playerId:"p", optionId:"opt", optionType:"call", symbol:"OK4U",
+      qty:200, strike:20, premiumPerShare:1, premiumTotal:200}
+  ]);
+  const harness = loadUI();
+  harness.ui.setGame({...config(core, "202-standard"), events:[]});
+  harness.ui.setState(state);
+  const html = harness.ui.render202Tools(state.players[0]);
+  assert.match(html, /data-option-minus="opt"[^]*aria-label="Уменьшить срок CALL OK4U на один тур"/);
+  assert.match(html, /data-option-plus="opt"[^]*aria-label="Увеличить срок CALL OK4U на один тур"/);
 });
 
 test("Fast Track transfer and pending real-estate continuation preview every affected financial result", () => {

@@ -61,6 +61,19 @@ test("nurse starts with cashflow plus savings", () => {
   assert.equal(p.cash, 1600);
 });
 
+test("legacy 101 numeric events keep their original replay result while diagnostics warn", () => {
+  const state = game([
+    {type:"ADD_PLAYER", playerId:"p", name:"Анна", professionId:"nurse"},
+    {type:"BUY_STOCK", id:"legacy-negative", playerId:"p", assetId:"legacy-stock",
+      symbol:"OK4U", qty:10, price:-10, div:0}
+  ]);
+
+  assert.equal(state.players[0].cash, 1700);
+  assert.equal(state.players[0].stocks[0].id, "legacy-stock");
+  assert.equal(state.eventWarnings[0].operationNumber, 2);
+  assert.equal(state.eventWarnings[0].applied, true);
+});
+
 test("legacy SPLIT still changes only its recorded holding", () => {
   const s = game([
     {type:"ADD_PLAYER", playerId:"p1", name:"Марк", professionId:"doctor"},

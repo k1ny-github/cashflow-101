@@ -424,7 +424,7 @@ function actBuyProp(p, kind){
       ...landFields
     ],
     validate: v => (!v.name.trim() ? "Укажи название" :
-      validatePositiveMoney(v.down, "Первоначальный взнос") ||
+      validatePositiveMoney(v.down, "Первоначальный взнос", true) ||
       validatePositiveMoney(v.price, "Цена") ||
       (!Number.isFinite(v.cashflow) ? "Денежный поток: укажи число" : null) ||
       (v.price < v.down ? "Цена меньше первоначального взноса" : null) ||
@@ -571,7 +571,8 @@ function actDownsized(p){
     title: "Увольнение",
     intro: "Платишь банку сумму общего расхода и пропускаешь два хода. Привилегии благотворительности сгорают.",
     preview: () => deltaPreview(p, -sum, 0),
-    submit: () => push({type:"DOWNSIZED", playerId:p.id, label:"Увольнение " + money(-sum)})
+    submit: () => push({type:"DOWNSIZED", playerId:p.id, counterId:"skip-turns",
+      counterName:"Пропуск ходов", label:"Увольнение " + money(-sum)})
   });
 }
 
@@ -765,7 +766,8 @@ function actOpenShort(p){
 }
 
 function actCloseShort(p, position){
-  const price = position.mustClose ? position.closePrice : S.marketPrices[position.symbol];
+  if(!position.mustClose){ alert("Шорт закрывается только при следующем событии цены этой акции."); return; }
+  const price = position.closePrice;
   const result = shortResult(position, price);
   openForm({
     title:"Закрыть шорт " + position.symbol, ok:"Закрыть",
@@ -791,6 +793,7 @@ function actShortBankruptcy(p){
   if(!confirm("Объявить личное банкротство из-за убытка по короткой позиции " +
     signed(result) + "? Непокрытый остаток будет списан, игрок пропустит три хода.")) return;
   push({type:"DECLARE_202_BANKRUPTCY", playerId:p.id, reason:"short-loss",
+    counterId:"skip-turns", counterName:"Пропуск ходов",
     label:"Личное банкротство из-за убытка по короткой позиции"});
 }
 
@@ -1246,7 +1249,9 @@ function eventDeltaPreview(p, event){
 function eventWarningsHTML(){
   return (S.eventWarnings || []).map(w =>
     '<div class="note warn">Операция № ' + w.operationNumber +
-    " повреждена и не применена при расчёте. Запись сохранена в журнале без изменений.</div>").join("");
+    (w.applied
+      ? " содержит старое недопустимое значение, но применена по прежним правилам. Запись сохранена без изменений.</div>"
+      : " повреждена и не применена при расчёте. Запись сохранена в журнале без изменений.</div>")).join("");
 }
 
 function renderCardCounters(p){
@@ -1258,8 +1263,9 @@ function renderCardCounters(p){
     html += '<div class="instrument' + tone + '"><div class="instrument-head"><b>' + esc(counter.name) +
       '</b><span>' + (counter.remaining === 0 ? "истёк" : counted(counter.remaining, "ход", "хода", "ходов")) + '</span></div>' +
       '<div class="instrument-actions"><button class="btn" data-counter-minus="' + esc(counter.id) + '"' +
+      ' aria-label="Уменьшить счётчик ' + esc(counter.name) + ' на один ход"' +
       (counter.remaining === 0 ? " disabled" : "") + '>−1</button><button class="btn" data-counter-plus="' +
-      esc(counter.id) + '">+1</button></div></div>';
+      esc(counter.id) + '" aria-label="Увеличить счётчик ' + esc(counter.name) + ' на один ход">+1</button></div></div>';
   });
   return html;
 }
@@ -1298,8 +1304,10 @@ function render202Tools(p){
       (Number.isFinite(price) ? '<div class="row"><span class="k">Рынок · выплата</span><span class="v ' + cls(payout) + '">' +
         money(price) + " · " + money(payout) + "</span></div>" : "") +
       '<div class="instrument-actions"><button class="btn" data-option-minus="' + esc(option.id) + '"' +
+      ' aria-label="Уменьшить срок ' + esc(option.type.toUpperCase() + " " + option.symbol) + ' на один тур"' +
       (forcedShortClose || option.remaining <= 0 ? " disabled" : "") + ">−1</button>" +
       '<button class="btn" data-option-plus="' + esc(option.id) + '"' +
+      ' aria-label="Увеличить срок ' + esc(option.type.toUpperCase() + " " + option.symbol) + ' на один тур"' +
       (forcedShortClose || option.remaining >= option.roundLimit ? " disabled" : "") + ">+1</button>" +
       (Number.isFinite(price) ? '<button class="btn primary" data-option-exercise="' + esc(option.id) + '"' +
         (forcedShortClose || payout <= 0 || option.remaining <= 0 ? " disabled" : "") + ">" +
@@ -1315,9 +1323,10 @@ function render202Tools(p){
       money(position.proceedsEnvelope) + "</span></div>" +
       (position.mustClose ? '<div class="row"><span class="k">Обязательный выкуп · результат</span><span class="v ' + cls(result) + '">' +
         money(position.closePrice) + " · " + signed(result) + "</span></div>" : "") +
-      '<div class="instrument-actions"><button class="btn ' + (position.mustClose ? "danger" : "") +
-      '" data-short-close="' + esc(position.id) + '"' + (forcedShortClose && !position.mustClose ? " disabled" : "") + ">" +
-      (position.mustClose ? "Подтвердить закрытие" : "Закрыть") + "</button></div></div>";
+      (position.mustClose
+        ? '<div class="instrument-actions"><button class="btn danger" data-short-close="' + esc(position.id) +
+          '">Подтвердить закрытие</button></div>'
+        : '<div class="note warn">Ждёт следующую цену этой акции</div>') + "</div>";
   });
   return html;
 }
@@ -1699,8 +1708,18 @@ function actProperty202(p){
       const asset = p.props.find(item => item.id === v.assetId);
       if(!asset) return "Объект не найден";
       if(v.operation === "repay") return p.cash < asset.mortgage ? "Наличными не хватает для погашения ипотеки" : null;
-      if(v.operation === "split") return asset.mortgage > 0 ? "Сначала полностью погаси ипотеку участка" :
-        validatePositiveMoney(v.acresSold, "Акры") || validatePositiveMoney(v.salePrice, "Выручка", true);
+      if(v.operation === "split"){
+        if(asset.kind !== "land" || !Number.isFinite(Number(asset.acres)) || Number(asset.acres) <= 0){
+          return "Для дробления выбери земельный участок с указанной площадью";
+        }
+        if(asset.mortgage > 0) return "Сначала полностью погаси ипотеку участка";
+        const error = validatePositiveMoney(v.acresSold, "Акры") ||
+          validatePositiveMoney(v.salePrice, "Выручка", true);
+        if(error) return error;
+        return Number(v.acresSold) >= Number(asset.acres)
+          ? "Проданная площадь должна быть меньше " + asset.acres + " акров"
+          : null;
+      }
       if(v.operation === "insured") return validatePositiveMoney(v.salePrice, "Убыток");
       return !v.name.trim() ? "Укажи новый объект" : validatePositiveMoney(v.price, "Цена") ||
         (asset.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null);
@@ -1756,7 +1775,8 @@ function actProperty202(p){
 function actBankruptcy(p, mode){
   if(mode === "101"){
     if(!confirm("Объявить банкротство 101? Активы продаются Банку за половину первого взноса, затем пропускаются три хода.")) return;
-    push({type:"DECLARE_101_BANKRUPTCY", playerId:p.id, label:"Банкротство Cashflow 101"});
+    push({type:"DECLARE_101_BANKRUPTCY", playerId:p.id, counterId:"skip-turns",
+      counterName:"Пропуск ходов", label:"Банкротство Cashflow 101"});
     return;
   }
   openForm({
@@ -1769,6 +1789,7 @@ function actBankruptcy(p, mode){
       eventDeltaPreview(p, {type:"DECLARE_202_BANKRUPTCY", playerId:p.id,
         reason:"personal", proceeds:v.proceeds}),
     submit:v => push({type:"DECLARE_202_BANKRUPTCY", playerId:p.id, reason:"personal", proceeds:v.proceeds,
+      counterId:"skip-turns", counterName:"Пропуск ходов",
       label:"Личное банкротство Cashflow 202"})
   });
 }
@@ -1812,7 +1833,22 @@ function actEditOwnedCard(p, type, id){
     title:"Изменить карточку", fields,
     validate:v => {
       const textKey = type === "stock" ? "symbol" : "name";
-      return !String(v[textKey] || "").trim() ? "Укажи название" : null;
+      if(!String(v[textKey] || "").trim()) return "Укажи название";
+      if(type === "stock") return validatePositiveMoney(v.qty, "Количество") ||
+        (!Number.isInteger(Number(v.qty)) ? "Количество: укажи целое число" : null) ||
+        validatePositiveMoney(v.price, "Цена", true) || validatePositiveMoney(v.div, "Дивиденд", true);
+      if(type === "property" || type === "ftBusiness") return (
+        validatePositiveMoney(v.price, "Цена", true) ||
+        validatePositiveMoney(v.down, "Первоначальный взнос", true) ||
+        validatePositiveMoney(v.mortgage, "Ипотека", true) ||
+        (!Number.isFinite(Number(v.cashflow)) ? "Денежный поток: укажи число" : null) ||
+        (Number(v.price) < Number(v.down) ? "Цена меньше первоначального взноса" : null));
+      if(type === "otherAsset") return validatePositiveMoney(v.cost, "Стоимость", true) ||
+        (!Number.isFinite(Number(v.income)) ? "Доход: укажи число" : null);
+      if(type === "otherLiability") return validatePositiveMoney(v.balance, "Остаток", true) ||
+        validatePositiveMoney(v.expense, "Расход", true);
+      if(type === "otherExpense") return validatePositiveMoney(v.amount, "Расход", true);
+      return null;
     },
     preview:v => eventDeltaPreview(p, {type:"UPDATE_OWNED_CARD", playerId:p.id,
       cardType:type, cardId:id, patch:v}),
