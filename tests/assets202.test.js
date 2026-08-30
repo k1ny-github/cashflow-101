@@ -327,6 +327,17 @@ test("new Downsized events expose an adjustable two-turn skip counter", () => {
   assert.equal(restored.cardCounters.find(counter => counter.id === "skip-turns").remaining, 2);
 });
 
+test("legacy TICK_SKIP keeps a new visible skip counter synchronized", () => {
+  const p = game([
+    addPlayer("p"),
+    {type:"DOWNSIZED", playerId:"p", counterId:"skip-turns"},
+    {type:"TICK_SKIP", playerId:"p"}
+  ]).players[0];
+
+  assert.equal(p.skipTurns, 1);
+  assert.equal(p.cardCounters.find(counter => counter.id === "skip-turns").remaining, 1);
+});
+
 test("Downsized cancels Rat Race charity and starts two skipped turns", () => {
   const p = game([
     addPlayer("p"),
@@ -618,6 +629,17 @@ test("owned-card editor rejects negative financial values but allows negative ca
 
   assert.match(harness.submit({name:"Дом", price:1000, down:100, mortgage:-1, cashflow:100}), /Ипотека/);
   assert.equal(harness.submit({name:"Дом", price:1000, down:100, mortgage:900, cashflow:-250}), null);
+});
+
+test("owned-card editor rejects a negative other-asset income", () => {
+  const harness = loadUI();
+  const p = game([addPlayer("p", {cash:0, stocks:[], properties:[],
+    otherAssets:[{id:"royalty", name:"Роялти", kind:"royalty", cost:100, income:50}],
+    otherLiabilities:[]})]).players[0];
+  harness.ui.actEditOwnedCard(p, "otherAsset", "royalty");
+
+  assert.match(harness.submit({name:"Роялти", kind:"royalty", cost:100, income:-50}), /Доход/);
+  assert.equal(harness.captured.events.length, 0);
 });
 
 test("Downsized UI records the adjustable skip counter identifier", () => {

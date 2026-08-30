@@ -479,6 +479,15 @@ test("property purchases allow zero down payments and land splits reject silent 
   assert.match(ordinaryHarness.captured.forms.at(-1).validate({operation:"split", assetId:"home",
     acresSold:1, salePrice:100}), /земельный участок/i);
 
+  const legacyLandHarness = loadUI();
+  const legacyLand = setIntegratedGame(legacyLandHarness, core, [addPlayer(),
+    {type:"BUY_PROPERTY", playerId:"p", assetId:"legacy-land", name:"Старый участок", kind:"land",
+      price:1000, down:1000, mortgage:-1, cashflow:0, acres:10}
+  ]);
+  legacyLandHarness.ui.actProperty202(legacyLand.player);
+  assert.match(legacyLandHarness.captured.forms.at(-1).validate({operation:"split", assetId:"legacy-land",
+    acresSold:1, salePrice:100}), /погаси ипотеку/i);
+
   const landHarness = loadUI();
   const land = setIntegratedGame(landHarness, core, [addPlayer(),
     {type:"BUY_PROPERTY", playerId:"p", assetId:"land", name:"Участок", kind:"land",

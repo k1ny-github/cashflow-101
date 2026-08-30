@@ -797,7 +797,13 @@ function apply(state, ev, config){
       return;
 
     case "TICK_CHARITY": p.charityTurns = Math.max(0, p.charityTurns - 1); return;
-    case "TICK_SKIP":    p.skipTurns    = Math.max(0, p.skipTurns - 1);    return;
+    case "TICK_SKIP":
+      p.skipTurns = Math.max(0, p.skipTurns - 1);
+      p.cardCounters.filter(counter => counter.kind === "skip").forEach(counter => {
+        counter.remaining = p.skipTurns;
+        counter.expired = p.skipTurns === 0;
+      });
+      return;
 
     case "ADD_OTHER_EXPENSE": {
       const amount = Math.max(0, finiteNumber(ev.amount));

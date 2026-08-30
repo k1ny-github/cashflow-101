@@ -1712,7 +1712,7 @@ function actProperty202(p){
         if(asset.kind !== "land" || !Number.isFinite(Number(asset.acres)) || Number(asset.acres) <= 0){
           return "Для дробления выбери земельный участок с указанной площадью";
         }
-        if(asset.mortgage > 0) return "Сначала полностью погаси ипотеку участка";
+        if(Number(asset.mortgage) !== 0) return "Сначала полностью погаси ипотеку участка";
         const error = validatePositiveMoney(v.acresSold, "Акры") ||
           validatePositiveMoney(v.salePrice, "Выручка", true);
         if(error) return error;
@@ -1844,7 +1844,7 @@ function actEditOwnedCard(p, type, id){
         (!Number.isFinite(Number(v.cashflow)) ? "Денежный поток: укажи число" : null) ||
         (Number(v.price) < Number(v.down) ? "Цена меньше первоначального взноса" : null));
       if(type === "otherAsset") return validatePositiveMoney(v.cost, "Стоимость", true) ||
-        (!Number.isFinite(Number(v.income)) ? "Доход: укажи число" : null);
+        validatePositiveMoney(v.income, "Доход", true);
       if(type === "otherLiability") return validatePositiveMoney(v.balance, "Остаток", true) ||
         validatePositiveMoney(v.expense, "Расход", true);
       if(type === "otherExpense") return validatePositiveMoney(v.amount, "Расход", true);
