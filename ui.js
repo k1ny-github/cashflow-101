@@ -9,7 +9,7 @@ const KEY = "cashflow-bankir-v1";
 /* Версия приложения. При каждом обновлении сайта поднимай её здесь И в номерах
    ?v= у всех локальных тегов script в index.html — иначе браузер до десяти минут будет
    показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
-const APP_VERSION = "8 — 31 августа 2026";
+const APP_VERSION = "9 — 31 августа 2026";
 
 let G = { mode: "101", settings: {optionRounds:3, strictLots:false}, events: [], current: null, screen: "setup" };
 let S = { players: [] };            // производное состояние
@@ -2331,10 +2331,9 @@ function tableActions(p, ft, d){
     ["🔀","Дробление акций", () => actSplit(p)],
     ["🛍","Всякая всячина", () => actDoodad(p)],
     ["❤️","Благотворительность", () => actCharity(p)],
-    ["👶","Ребёнок", () => actChild(p)],
+    ["👶","Добавить / убрать ребёнка", () => actChild(p)],
     ["🏦","Взять кредит", () => actLoan(p)],
     ["✅","Погасить долг", () => actRepay(p)],
-    ["💔","Развод", () => actLoseCash(p, "all", "Развод")],
     ["🧮","Счётчики карточек", () => actCardCounter(p)],
     ["➕","Разовый доход", () => actCash(p, "in")],
     ["➖","Прочий расход", () => actOtherExpense(p)]

@@ -830,7 +830,7 @@ test("UI exposes correction tools in both modes and asset tools only in 202", ()
   for(const labels of [labels101, labels202]){
     assert.equal(labels.includes("Прочий расход"), true);
     assert.equal(labels.includes("Счётчики карточек"), true);
-    assert.equal(labels.includes("Развод"), true);
+    assert.equal(labels.includes("Развод"), false);
     assert.equal(labels.includes("Увольнение"), false);
     assert.equal(labels.includes("Налоги / Суд"), false);
     assert.equal(labels.includes("Моя мечта"), false);
@@ -847,6 +847,25 @@ test("UI exposes correction tools in both modes and asset tools only in 202", ()
   assert.equal(fastTrackLabels.includes("Налоги / Суд"), true);
   assert.equal(fastTrackLabels.includes("Моя мечта"), false);
   assert.equal(fastTrackLabels.includes("Купить мечту"), true);
+});
+
+test("Divorce is Fast Track-only and the child action clearly supports add and remove", () => {
+  const harness = loadUI();
+  const ratRace = game([addPlayer("p"), {type:"CHILD", playerId:"p"}], "101").players[0];
+  harness.ui.setState({players:[ratRace], marketPrices:{}});
+  harness.ui.setGame({mode:"101", settings:{}, events:[]});
+  const ratRaceActions = harness.ui.actionsFor(ratRace);
+
+  assert.equal(ratRaceActions.some(action => action[1] === "Развод"), false);
+  const childAction = ratRaceActions.find(action => action[1] === "Добавить / убрать ребёнка");
+  assert.ok(childAction);
+  childAction[2]();
+  assert.deepEqual(Array.from(harness.captured.forms.at(-1).fields[0].options, option => option.v),
+    ["add", "remove"]);
+
+  const fastTrack = game([addPlayer("ft"), {type:"ENTER_FT", playerId:"ft"}], "101").players[0];
+  harness.ui.setState({players:[fastTrack], marketPrices:{}});
+  assert.equal(harness.ui.actionsFor(fastTrack).some(action => action[1] === "Развод"), true);
 });
 
 test("starting-portfolio property rows preserve land and business card details", () => {
