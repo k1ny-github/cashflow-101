@@ -9,7 +9,7 @@ const KEY = "cashflow-bankir-v1";
 /* Версия приложения. При каждом обновлении сайта поднимай её здесь И в номерах
    ?v= у всех локальных тегов script в index.html — иначе браузер до десяти минут будет
    показывать старые файлы из кэша (GitHub Pages отдаёт Cache-Control: max-age=600). */
-const APP_VERSION = "6 — 30 августа 2026";
+const APP_VERSION = "7 — 31 августа 2026";
 
 let G = { mode: "101", settings: {optionRounds:3, strictLots:false}, events: [], current: null, screen: "setup" };
 let S = { players: [] };            // производное состояние
@@ -1659,31 +1659,142 @@ function transferable202Assets(p){
 }
 
 function actTransfer202(p){
-  const assets = transferable202Assets(p);
-  const buyers = S.players.filter(player => player.id !== p.id);
-  if(!assets.length || !buyers.length){ alert("Для сделки нужен разрешённый актив и другой игрок."); return; }
   openForm({
     title:"Сделка с игроком",
+    intro:"Если вы играете на разных устройствах, каждый записывает свою сторону сделки отдельно.",
+    fields:[{k:"direction", type:"select", label:"Моя сторона сделки", options:[
+      {v:"sell", t:"Я продаю актив"}, {v:"buy", t:"Я покупаю актив"}
+    ]}],
+    submit:v => v.direction === "buy" ? actExternalPurchase202(p) : actTransferSale202(p)
+  });
+}
+
+function actTransferSale202(p){
+  const assets = transferable202Assets(p);
+  const buyers = S.players.filter(player => player.id !== p.id);
+  if(!assets.length){ alert("Для продажи нужна недвижимость или авторский доход."); return; }
+  const buyerOptions = buyers.map(player => ({v:player.id, t:player.name}))
+    .concat({v:"external", t:"Игрок на другом устройстве"});
+  openForm({
+    title:"Я продаю актив",
     intro:"Передаются недвижимость и авторские доходы. Кредит банка продавца не переходит.",
     fields:[
       {k:"asset", type:"select", label:"Актив", options:assets},
-      {k:"buyerId", type:"select", label:"Покупатель", options:buyers.map(player => ({v:player.id, t:player.name}))},
+      {k:"buyerId", type:"select", label:"Покупатель", options:buyerOptions},
+      {k:"counterpartyName", type:"text", label:"Имя игрока на другом устройстве",
+        hint:"Заполни только для внешнего игрока."},
       {k:"price", label:"Цена сделки, $", value:0}
     ],
     validate:v => validatePositiveMoney(v.price, "Цена", true) ||
+      (v.buyerId === "external" && !v.counterpartyName.trim() ? "Укажи имя игрока на другом устройстве" : null) ||
       (buyers.find(player => player.id === v.buyerId)?.cash < v.price ? "У покупателя не хватает наличных" : null),
     preview:v => {
       const [assetType, assetId] = v.asset.split(":");
-      const event = {type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId,
-        assetType, assetId, price:v.price};
+      const external = v.buyerId === "external";
+      const event = external
+        ? {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:p.id, direction:"sell",
+          assetType, assetId, price:v.price, counterpartyName:v.counterpartyName.trim()}
+        : {type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId,
+          assetType, assetId, price:v.price};
       const buyer = buyers.find(player => player.id === v.buyerId);
       return '<div class="sub">Продавец · ' + esc(p.name) + "</div>" + eventDeltaPreview(p, event) +
         (buyer ? '<div class="sub">Покупатель · ' + esc(buyer.name) + "</div>" + eventDeltaPreview(buyer, event) : "");
     },
     submit:v => {
       const [assetType, assetId] = v.asset.split(":");
+      if(v.buyerId === "external"){
+        push({type:"TRANSFER_EXTERNAL_202_ASSET", playerId:p.id, direction:"sell",
+          counterpartyName:v.counterpartyName.trim(), assetType, assetId, price:v.price,
+          label:"Актив продан игроку " + v.counterpartyName.trim() + " за " + money(v.price)});
+        return;
+      }
       push({type:"TRANSFER_202_ASSET", playerId:p.id, toPlayerId:v.buyerId, assetType, assetId,
         price:v.price, label:"Актив передан игроку за " + money(v.price)});
+    }
+  });
+}
+
+function actExternalPurchase202(p){
+  openForm({
+    title:"Я покупаю актив",
+    intro:"Выбери вид карточки. На следующем экране будут только её данные.",
+    fields:[{k:"assetType", type:"select", label:"Вид актива", options:[
+      {v:"property", t:"Недвижимость / бизнес / земля"},
+      {v:"royalty", t:"Авторский доход / роялти"}
+    ]}],
+    submit:v => v.assetType === "royalty" ? actExternalRoyaltyPurchase202(p) : actExternalPropertyPurchase202(p)
+  });
+}
+
+function actExternalPropertyPurchase202(p){
+  const buildEvent = v => ({
+    type:"TRANSFER_EXTERNAL_202_ASSET", playerId:p.id, direction:"buy",
+    counterpartyName:v.counterpartyName.trim(), assetType:"property", price:v.price,
+    asset:{id:"preview-external-property", name:v.name.trim(), kind:v.kind,
+      price:v.cardPrice, down:v.price, mortgage:v.mortgage, cashflow:v.cashflow,
+      ...(v.kind === "land" ? {acres:v.acres} : {})}
+  });
+  openForm({
+    title:"Покупка у игрока · недвижимость",
+    intro:"Цена сделки списывается отдельно. Ипотека объекта переносится, кредит банка продавца — нет.",
+    fields:[
+      {k:"counterpartyName", type:"text", label:"У кого покупаю"},
+      {k:"name", type:"text", label:"Название карточки"},
+      {k:"kind", type:"select", label:"Тип", options:[
+        {v:"property", t:"Недвижимость"}, {v:"business", t:"Бизнес"}, {v:"land", t:"Земля"}
+      ]},
+      {k:"cardPrice", label:"Цена на карточке, $", value:0},
+      {k:"mortgage", label:"Ипотека объекта, $", value:0},
+      {k:"cashflow", label:"Денежный поток / мес, $", value:0},
+      {k:"acres", label:"Площадь земли, акров", value:0, hint:"Для обычного объекта оставь ноль."},
+      {k:"price", label:"Цена сделки между игроками, $", value:0}
+    ],
+    validate:v => !v.counterpartyName.trim() ? "Укажи имя игрока" :
+      !v.name.trim() ? "Укажи название карточки" :
+      validatePositiveMoney(v.cardPrice, "Цена на карточке") ||
+      validatePositiveMoney(v.mortgage, "Ипотека", true) ||
+      (!Number.isFinite(v.cashflow) ? "Денежный поток: укажи число" : null) ||
+      (v.kind === "land" ? validatePositiveMoney(v.acres, "Площадь земли") : null) ||
+      validatePositiveMoney(v.price, "Цена сделки", true) ||
+      (p.cash < v.price ? "Наличными не хватает; кредит на сделку между игроками недоступен" : null),
+    preview:v => eventDeltaPreview(p, buildEvent(v)),
+    submit:v => {
+      const event = buildEvent(v);
+      event.asset.id = uid();
+      event.label = "Куплен актив у игрока " + v.counterpartyName.trim() + " за " + money(v.price);
+      push(event);
+    }
+  });
+}
+
+function actExternalRoyaltyPurchase202(p){
+  const buildEvent = v => ({
+    type:"TRANSFER_EXTERNAL_202_ASSET", playerId:p.id, direction:"buy",
+    counterpartyName:v.counterpartyName.trim(), assetType:"royalty", price:v.price,
+    asset:{id:"preview-external-royalty", name:v.name.trim(), kind:"royalty",
+      cost:v.cardPrice, income:v.income}
+  });
+  openForm({
+    title:"Покупка у игрока · авторский доход",
+    fields:[
+      {k:"counterpartyName", type:"text", label:"У кого покупаю"},
+      {k:"name", type:"text", label:"Название карточки"},
+      {k:"cardPrice", label:"Стоимость карточки, $", value:0},
+      {k:"income", label:"Доход / мес, $", value:0},
+      {k:"price", label:"Цена сделки между игроками, $", value:0}
+    ],
+    validate:v => !v.counterpartyName.trim() ? "Укажи имя игрока" :
+      !v.name.trim() ? "Укажи название карточки" :
+      validatePositiveMoney(v.cardPrice, "Стоимость карточки", true) ||
+      validatePositiveMoney(v.income, "Доход", true) ||
+      validatePositiveMoney(v.price, "Цена сделки", true) ||
+      (p.cash < v.price ? "Наличными не хватает; кредит на сделку между игроками недоступен" : null),
+    preview:v => eventDeltaPreview(p, buildEvent(v)),
+    submit:v => {
+      const event = buildEvent(v);
+      event.asset.id = uid();
+      event.label = "Куплен авторский доход у игрока " + v.counterpartyName.trim() + " за " + money(v.price);
+      push(event);
     }
   });
 }
@@ -1692,82 +1803,140 @@ function actProperty202(p){
   if(!p.props.length){ alert("Недвижимости пока нет."); return; }
   openForm({
     title:"Операции с недвижимостью",
+    intro:"Сначала выбери действие — дальше появятся только нужные поля.",
+    fields:[{k:"operation", type:"select", label:"Что произошло", options:[
+      {v:"repay", t:"Полностью погасил ипотеку"},
+      {v:"split", t:"Продал часть земельного участка"},
+      {v:"exchange", t:"Обменял объект на другой"},
+      {v:"insured", t:"Получил выплату по страховому событию"}
+    ]}],
+    submit:v => {
+      if(v.operation === "repay") actRepayPropertyMortgage202(p);
+      else if(v.operation === "split") actSplitLand202(p);
+      else if(v.operation === "exchange") actExchangeProperty202(p);
+      else actInsuredPropertyEvent202(p);
+    }
+  });
+}
+
+function propertyChoices202(p){
+  return p.props.map(asset => ({v:asset.id, t:asset.name}));
+}
+
+function actRepayPropertyMortgage202(p){
+  openForm({
+    title:"Полностью погасить ипотеку",
+    fields:[{k:"assetId", type:"select", label:"Объект", options:propertyChoices202(p)}],
+    validate:v => {
+      const asset = p.props.find(item => item.id === v.assetId);
+      return !asset ? "Объект не найден" :
+        p.cash < asset.mortgage ? "Наличными не хватает для погашения ипотеки" : null;
+    },
+    preview:v => eventDeltaPreview(p, {type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:v.assetId}),
+    submit:v => {
+      const asset = p.props.find(item => item.id === v.assetId); if(!asset) return;
+      push({type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:asset.id,
+        label:"Погашена ипотека: " + asset.name});
+    }
+  });
+}
+
+function actSplitLand202(p){
+  openForm({
+    title:"Продать часть земельного участка",
     fields:[
-      {k:"operation", type:"select", label:"Операция", options:[
-        {v:"repay", t:"Погасить ипотеку полностью"},
-        {v:"split", t:"Продать часть земли"},
-        {v:"exchange", t:"Обменять на объект того же типа"},
-        {v:"insured", t:"Страховое событие"}
-      ]},
-      {k:"assetId", type:"select", label:"Объект", options:p.props.map(asset => ({v:asset.id, t:asset.name}))},
-      {k:"acresSold", label:"Продано акров", value:0},
-      {k:"salePrice", label:"Выручка / убыток, $", value:0},
-      ...optionPropertyFields()
+      {k:"assetId", type:"select", label:"Участок", options:propertyChoices202(p)},
+      {k:"acresSold", label:"Сколько акров продано", value:0},
+      {k:"salePrice", label:"Получено наличными, $", value:0}
     ],
     validate:v => {
       const asset = p.props.find(item => item.id === v.assetId);
       if(!asset) return "Объект не найден";
-      if(v.operation === "repay") return p.cash < asset.mortgage ? "Наличными не хватает для погашения ипотеки" : null;
-      if(v.operation === "split"){
-        if(asset.kind !== "land" || !Number.isFinite(Number(asset.acres)) || Number(asset.acres) <= 0){
-          return "Для дробления выбери земельный участок с указанной площадью";
-        }
-        if(Number(asset.mortgage) !== 0) return "Сначала полностью погаси ипотеку участка";
-        const error = validatePositiveMoney(v.acresSold, "Акры") ||
-          validatePositiveMoney(v.salePrice, "Выручка", true);
-        if(error) return error;
-        return Number(v.acresSold) >= Number(asset.acres)
-          ? "Проданная площадь должна быть меньше " + asset.acres + " акров"
-          : null;
+      if(asset.kind !== "land" || !Number.isFinite(Number(asset.acres)) || Number(asset.acres) <= 0){
+        return "Для дробления выбери земельный участок с указанной площадью";
       }
-      if(v.operation === "insured") return validatePositiveMoney(v.salePrice, "Убыток");
-      return !v.name.trim() ? "Укажи новый объект" : validatePositiveMoney(v.price, "Цена") ||
-        (asset.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null);
+      if(Number(asset.mortgage) !== 0) return "Сначала полностью погаси ипотеку участка";
+      const error = validatePositiveMoney(v.acresSold, "Акры") ||
+        validatePositiveMoney(v.salePrice, "Выручка", true);
+      if(error) return error;
+      return Number(v.acresSold) >= Number(asset.acres)
+        ? "Проданная площадь должна быть меньше " + asset.acres + " акров" : null;
     },
+    preview:v => eventDeltaPreview(p, {type:"SPLIT_LAND", playerId:p.id, assetId:v.assetId,
+      acresSold:v.acresSold, salePrice:v.salePrice}),
+    submit:v => push({type:"SPLIT_LAND", playerId:p.id, assetId:v.assetId,
+      acresSold:v.acresSold, salePrice:v.salePrice,
+      label:"Продана часть земли: " + v.acresSold + " акр."})
+  });
+}
+
+function actExchangeProperty202(p){
+  openForm({
+    title:"Какой объект обмениваем",
+    fields:[{k:"assetId", type:"select", label:"Текущий объект", options:propertyChoices202(p)}],
+    submit:v => actExchangePropertyDetails202(p, v.assetId)
+  });
+}
+
+function actExchangePropertyDetails202(p, assetId){
+  const asset = p.props.find(item => item.id === assetId); if(!asset) return;
+  const landFields = asset.kind === "land" ? [
+    {k:"acres", label:"Площадь земли, акров", value:0},
+    {k:"removeCashflow", type:"select", label:"Поток после продажи части земли", options:[
+      {v:"keep", t:"Сохраняется"}, {v:"remove", t:"Удаляется"}
+    ]}
+  ] : [];
+  const buildReplacement = (v, id) => ({assetId:id, name:v.name.trim(), kind:asset.kind,
+    price:v.price, down:v.down, mortgage:v.mortgage, cashflow:v.cashflow,
+    ...(asset.kind === "land" ? {acres:v.acres, removeCashflowOnSplit:v.removeCashflow === "remove"} : {})});
+  openForm({
+    title:"Новый объект вместо «" + asset.name + "»",
+    intro:"Обмен проходит без движения наличных. Старые ипотека и денежный поток заменяются новыми.",
+    fields:[
+      {k:"name", type:"text", label:"Название нового объекта"},
+      {k:"price", label:"Цена, $", value:0},
+      {k:"down", label:"Первоначальный взнос, $", value:0},
+      {k:"mortgage", label:"Ипотека, $", value:0},
+      {k:"cashflow", label:"Денежный поток / мес, $", value:0},
+      ...landFields
+    ],
+    validate:v => !v.name.trim() ? "Укажи новый объект" :
+      validatePositiveMoney(v.price, "Цена") ||
+      validatePositiveMoney(v.down, "Первоначальный взнос", true) ||
+      validatePositiveMoney(v.mortgage, "Ипотека", true) ||
+      (!Number.isFinite(v.cashflow) ? "Денежный поток: укажи число" : null) ||
+      (asset.kind === "land" ? validatePositiveMoney(v.acres, "Площадь участка") : null),
+    preview:v => eventDeltaPreview(p, {type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
+      replacement:buildReplacement(v, "preview-exchange")}),
+    submit:v => push({type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
+      replacement:buildReplacement(v, uid()),
+      label:"Обмен недвижимости: " + asset.name + " → " + v.name.trim()})
+  });
+}
+
+function actInsuredPropertyEvent202(p){
+  openForm({
+    title:"Страховое событие",
+    fields:[
+      {k:"assetId", type:"select", label:"Пострадавший объект", options:propertyChoices202(p)},
+      {k:"amount", label:"Полученная страховая выплата, $", value:0}
+    ],
+    validate:v => validatePositiveMoney(v.amount, "Страховая выплата"),
     preview:v => {
       const asset = p.props.find(item => item.id === v.assetId); if(!asset) return "";
-      let event;
-      if(v.operation === "repay"){
-        event = {type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:asset.id};
-      } else if(v.operation === "split"){
-        event = {type:"SPLIT_LAND", playerId:p.id, assetId:asset.id,
-          acresSold:v.acresSold, salePrice:v.salePrice};
-      } else if(v.operation === "insured"){
-        const jointKey = asset.jointId || asset.id;
-        const playerIds = S.players.filter(owner => owner.props.some(item =>
-          item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
-        event = {type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds,
-          assetId:jointKey, amount:v.salePrice};
-      } else {
-        event = {type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
-          replacement:{assetId:"preview", name:v.name.trim(), kind:asset.kind,
-            price:v.price, down:v.down, mortgage:v.mortgage, cashflow:v.cashflow,
-            ...(asset.kind === "land" ? {acres:v.acres,
-              removeCashflowOnSplit:v.removeCashflow === "remove"} : {})}};
-      }
-      return eventDeltaPreview(p, event);
+      const jointKey = asset.jointId || asset.id;
+      const playerIds = S.players.filter(owner => owner.props.some(item =>
+        item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
+      return eventDeltaPreview(p, {type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds,
+        assetId:jointKey, amount:v.amount});
     },
     submit:v => {
       const asset = p.props.find(item => item.id === v.assetId); if(!asset) return;
-      if(v.operation === "repay"){
-        push({type:"REPAY_PROPERTY_MORTGAGE", playerId:p.id, assetId:asset.id,
-          label:"Погашена ипотека: " + asset.name});
-      } else if(v.operation === "split"){
-        push({type:"SPLIT_LAND", playerId:p.id, assetId:asset.id, acresSold:v.acresSold, salePrice:v.salePrice,
-          label:"Продана часть земли: " + v.acresSold + " акр."});
-      } else if(v.operation === "insured"){
-        const jointKey = asset.jointId || asset.id;
-        const playerIds = S.players.filter(owner => owner.props.some(item =>
-          item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
-        push({type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds, assetId:jointKey, amount:v.salePrice,
-          label:"Страховое событие: " + asset.name});
-      } else {
-        push({type:"EXCHANGE_PROPERTY", playerId:p.id, assetId:asset.id,
-          replacement:{assetId:uid(), name:v.name.trim(), kind:asset.kind, price:v.price, down:v.down,
-            mortgage:v.mortgage, cashflow:v.cashflow,
-            ...(asset.kind === "land" ? {acres:v.acres, removeCashflowOnSplit:v.removeCashflow === "remove"} : {})},
-          label:"Обмен недвижимости: " + asset.name + " → " + v.name.trim()});
-      }
+      const jointKey = asset.jointId || asset.id;
+      const playerIds = S.players.filter(owner => owner.props.some(item =>
+        item.id === jointKey || item.jointId === jointKey)).map(owner => owner.id);
+      push({type:"INSURED_PROPERTY_EVENT", playerId:p.id, playerIds, assetId:jointKey, amount:v.amount,
+        label:"Страховое событие: " + asset.name});
     }
   });
 }
@@ -1877,9 +2046,9 @@ function tableActions(p, ft, d){
     ["💵","День CASHFLOW", () => actFTPayday(p), true],
     ["🏢","Купить бизнес", () => actFTBiz(p)],
     ["❤️","Благотворительность", () => actFTCharity(p)],
+    ["📉","Увольнение", () => actDownsized(p)],
     ["⭐","Купить свою Мечту", () => actFTDream(p)],
     ["🔖","Жетон на чужую Мечту", () => actDreamToken(p)],
-    ["✏️","Моя мечта", () => actSetDream(p)],
     ["🧾","Налоги / Суд", () => actLoseCash(p, "half", "Налоги / Суд")],
     ["💔","Развод", () => actLoseCash(p, "all", "Развод")],
     ["🧮","Счётчики карточек", () => actCardCounter(p)],
@@ -1895,15 +2064,12 @@ function tableActions(p, ft, d){
     ["🛍","Всякая всячина", () => actDoodad(p)],
     ["❤️","Благотворительность", () => actCharity(p)],
     ["👶","Ребёнок", () => actChild(p)],
-    ["📉","Увольнение", () => actDownsized(p)],
     ["🏦","Взять кредит", () => actLoan(p)],
     ["✅","Погасить долг", () => actRepay(p)],
-    ["🧾","Налоги / Суд", () => actLoseCash(p, "half", "Налоги / Суд")],
     ["💔","Развод", () => actLoseCash(p, "all", "Развод")],
     ["🧮","Счётчики карточек", () => actCardCounter(p)],
     ["➕","Разовый доход", () => actCash(p, "in")],
-    ["➖","Прочий расход", () => actOtherExpense(p)],
-    ["✏️","Моя мечта", () => actSetDream(p)]
+    ["➖","Прочий расход", () => actOtherExpense(p)]
   ];
   if(ft && is202(G)){
     const dreamAction = actions.find(action => action[1] === "Купить свою Мечту");

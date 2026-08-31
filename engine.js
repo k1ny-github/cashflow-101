@@ -398,6 +398,15 @@ const EVENT_DIAGNOSTICS = Object.freeze({
   TRANSFER_202_ASSET:{player:true, valid:ev => eventId(ev, ["toPlayerId", "buyerId"]) && eventId(ev, ["assetId"]) &&
     ["property", "realEstate", "royalty", "realEstateOption", "real-estate-option"].includes(ev.assetType || ev.cardType) &&
     (ev.price === undefined || eventNonNegative(ev.price)), references:ev => [ev.toPlayerId || ev.buyerId]},
+  TRANSFER_EXTERNAL_202_ASSET:{player:true, valid:ev => {
+    const direction = ev.direction;
+    const assetType = ev.assetType || ev.cardType;
+    if(!["sell", "buy"].includes(direction) || !["property", "royalty"].includes(assetType) ||
+       !eventNonNegative(ev.price)) return false;
+    if(direction === "sell") return eventId(ev, ["assetId"]);
+    const asset = ev.asset;
+    return eventObject(asset) && eventId(asset, ["id", "assetId"]) && eventText(asset.name);
+  }},
   ADD_D2Y:{player:true, valid:ev => Number.isInteger(Number(ev.number ?? ev.cardNumber)) &&
     Number(ev.number ?? ev.cardNumber) >= 1 && Number(ev.number ?? ev.cardNumber) <= 3 &&
     eventOptionalNumber(ev, "cost") && eventOptionalNumber(ev, "price") && eventOptionalNumber(ev, "income")},
@@ -943,6 +952,43 @@ function apply(state, ev, config){
       return;
     }
 
+    case "TRANSFER_EXTERNAL_202_ASSET": {
+      if(!allows202Event(config)) return;
+      const direction = ev.direction;
+      const assetType = ev.assetType || ev.cardType;
+      const price = Math.max(0, finiteNumber(ev.price));
+      if(direction === "sell"){
+        let asset = null;
+        if(assetType === "property"){
+          asset = p.props.find(item => item.id === ev.assetId);
+          if(asset) p.props = p.props.filter(item => item.id !== asset.id);
+        } else if(assetType === "royalty"){
+          asset = p.otherAssets.find(item => item.id === ev.assetId && item.kind === "royalty");
+          if(asset) p.otherAssets = p.otherAssets.filter(item => item.id !== asset.id);
+        }
+        if(asset) p.cash += price;
+        return;
+      }
+      if(direction !== "buy" || p.cash < price || !ev.asset) return;
+      if(assetType === "property"){
+        const asset = propertyFromEvent(ev.asset, ev.asset.id || ev.asset.assetId);
+        if(!asset?.id || p.props.some(item => item.id === asset.id)) return;
+        p.props.push(asset);
+      } else if(assetType === "royalty"){
+        const id = ev.asset.id || ev.asset.assetId;
+        if(!id || p.otherAssets.some(item => item.id === id)) return;
+        p.otherAssets.push({
+          id,
+          name:String(ev.asset.name || "Авторский доход"),
+          kind:"royalty",
+          cost:Math.max(0, finiteNumber(ev.asset.cost)),
+          income:finiteNumber(ev.asset.income)
+        });
+      } else return;
+      p.cash -= price;
+      return;
+    }
+
     case "ADD_D2Y": {
       if(!allows202Event(config)) return;
       const number = Number(ev.number ?? ev.cardNumber);
@@ -1229,7 +1275,7 @@ function warnings(p){
             : "Цель по пассивному доходу достигнута — победа!")});
     }
     if(!p.dream) out.push({level:"warn", text:
-      "Мечта не выбрана. Задай её кнопкой «Моя мечта» — иначе победу по Мечте не отследить."});
+      "Мечта не выбрана. В новой партии выбери её при создании игрока; на Скоростной дорожке используй «Купить мечту»."});
     if(p.cash < 0) out.push({level:"bad", text:"Наличные ушли в минус."});
     return out;
   }

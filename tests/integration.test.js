@@ -434,11 +434,13 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   const propertyHarness = loadUI();
   const propertyGame = setIntegratedGame(propertyHarness, core, propertyEvents);
   propertyHarness.ui.actProperty202(propertyGame.player);
+  const propertyChoice = propertyHarness.captured.forms.at(-1);
+  assert.deepEqual(Array.from(propertyChoice.fields, field => field.k), ["operation"]);
+  propertyChoice.submit({operation:"repay"});
   const propertyForm = propertyHarness.captured.forms.at(-1);
   assert.equal(typeof propertyForm.preview, "function");
-  assert.match(propertyForm.preview({operation:"repay", assetId:"home", acresSold:0, salePrice:0,
-    name:"", kind:"property", price:0, down:0, mortgage:0, cashflow:0, acres:0,
-    removeCashflow:"keep"}), /Наличные/);
+  assert.deepEqual(Array.from(propertyForm.fields, field => field.k), ["assetId"]);
+  assert.match(propertyForm.preview({assetId:"home"}), /Наличные/);
 
   const transferEvents = [
     addPlayer("p", {initialPortfolio:{cash:0, stocks:[], properties:[],
@@ -448,9 +450,42 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   const transferHarness = loadUI();
   const transferGame = setIntegratedGame(transferHarness, core, transferEvents);
   transferHarness.ui.actTransfer202(transferGame.player);
+  const transferChoice = transferHarness.captured.forms.at(-1);
+  assert.deepEqual(Array.from(transferChoice.fields[0].options, option => option.v), ["sell", "buy"]);
+  transferChoice.submit({direction:"sell"});
   const transferForm = transferHarness.captured.forms.at(-1);
   assert.equal(typeof transferForm.preview, "function");
-  assert.match(transferForm.preview({asset:"royalty:p-initial-other-0", buyerId:"buyer", price:100}), /Изменение/);
+  assert.match(transferForm.preview({asset:"royalty:p-initial-other-0", buyerId:"buyer",
+    counterpartyName:"", price:100}), /Изменение/);
+
+  const externalHarness = loadUI();
+  const externalGame = setIntegratedGame(externalHarness, core, transferEvents.slice(0, 1));
+  externalHarness.ui.actTransfer202(externalGame.player);
+  externalHarness.captured.forms.at(-1).submit({direction:"sell"});
+  const externalForm = externalHarness.captured.forms.at(-1);
+  assert.equal(externalForm.fields.find(field => field.k === "buyerId").options.at(-1).v, "external");
+  assert.equal(externalForm.validate({asset:"royalty:p-initial-other-0", buyerId:"external",
+    counterpartyName:"Другой телефон", price:100}), null);
+  externalForm.submit({asset:"royalty:p-initial-other-0", buyerId:"external",
+    counterpartyName:"Другой телефон", price:100});
+  assert.equal(externalHarness.captured.events[0].type, "TRANSFER_EXTERNAL_202_ASSET");
+  assert.equal(externalHarness.captured.events[0].direction, "sell");
+
+  const purchaseHarness = loadUI();
+  const purchaseGame = setIntegratedGame(purchaseHarness, core, [addPlayer()]);
+  purchaseHarness.ui.actTransfer202(purchaseGame.player);
+  purchaseHarness.captured.forms.at(-1).submit({direction:"buy"});
+  purchaseHarness.captured.forms.at(-1).submit({assetType:"property"});
+  const purchaseForm = purchaseHarness.captured.forms.at(-1);
+  assert.deepEqual(Array.from(purchaseForm.fields, field => field.k),
+    ["counterpartyName", "name", "kind", "cardPrice", "mortgage", "cashflow", "acres", "price"]);
+  assert.equal(purchaseForm.validate({counterpartyName:"Другой телефон", name:"Дом", kind:"property",
+    cardPrice:1000, mortgage:600, cashflow:150, acres:0, price:400}), null);
+  purchaseForm.submit({counterpartyName:"Другой телефон", name:"Дом", kind:"property",
+    cardPrice:1000, mortgage:600, cashflow:150, acres:0, price:400});
+  assert.equal(purchaseHarness.captured.events[0].type, "TRANSFER_EXTERNAL_202_ASSET");
+  assert.equal(purchaseHarness.captured.events[0].direction, "buy");
+  assert.equal(purchaseHarness.captured.events[0].asset.down, 400);
 
   const editHarness = loadUI();
   const editGame = setIntegratedGame(editHarness, core, propertyEvents);
@@ -476,7 +511,8 @@ test("property purchases allow zero down payments and land splits reject silent 
       price:1000, down:100, mortgage:0, cashflow:100}
   ]);
   ordinaryHarness.ui.actProperty202(ordinary.player);
-  assert.match(ordinaryHarness.captured.forms.at(-1).validate({operation:"split", assetId:"home",
+  ordinaryHarness.captured.forms.at(-1).submit({operation:"split"});
+  assert.match(ordinaryHarness.captured.forms.at(-1).validate({assetId:"home",
     acresSold:1, salePrice:100}), /земельный участок/i);
 
   const legacyLandHarness = loadUI();
@@ -485,7 +521,8 @@ test("property purchases allow zero down payments and land splits reject silent 
       price:1000, down:1000, mortgage:-1, cashflow:0, acres:10}
   ]);
   legacyLandHarness.ui.actProperty202(legacyLand.player);
-  assert.match(legacyLandHarness.captured.forms.at(-1).validate({operation:"split", assetId:"legacy-land",
+  legacyLandHarness.captured.forms.at(-1).submit({operation:"split"});
+  assert.match(legacyLandHarness.captured.forms.at(-1).validate({assetId:"legacy-land",
     acresSold:1, salePrice:100}), /погаси ипотеку/i);
 
   const landHarness = loadUI();
@@ -494,8 +531,9 @@ test("property purchases allow zero down payments and land splits reject silent 
       price:1000, down:1000, mortgage:0, cashflow:0, acres:10}
   ]);
   landHarness.ui.actProperty202(land.player);
+  landHarness.captured.forms.at(-1).submit({operation:"split"});
   const landForm = landHarness.captured.forms.at(-1);
-  assert.match(landForm.validate({operation:"split", assetId:"land", acresSold:10, salePrice:100}), /меньше 10/i);
+  assert.match(landForm.validate({assetId:"land", acresSold:10, salePrice:100}), /меньше 10/i);
 });
 
 test("mobile journal undo and option counters expose usable accessible controls", () => {

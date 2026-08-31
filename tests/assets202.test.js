@@ -466,6 +466,38 @@ test("transfers allow property and royalties but reject market positions and D2Y
   assert.equal(buyer.otherAssets[0].id, "royalty");
 });
 
+test("an external sale works with one local player and undo restores the asset", () => {
+  const events = [
+    addPlayer("seller", {cash:0, stocks:[], properties:[], otherLiabilities:[], otherAssets:[
+      {id:"royalty", name:"Роялти", kind:"royalty", cost:1000, income:200}
+    ]}),
+    {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:"seller", direction:"sell",
+      assetType:"royalty", assetId:"royalty", price:500, counterpartyName:"Игрок на телефоне"}
+  ];
+  const sold = game(events).players[0];
+  const restored = game(events.slice(0, -1)).players[0];
+
+  assert.equal(sold.cash, 2300);
+  assert.equal(sold.otherAssets.length, 0);
+  assert.equal(restored.cash, 1800);
+  assert.equal(restored.otherAssets[0].id, "royalty");
+});
+
+test("an external purchase records a property without a second local player", () => {
+  const p = game([
+    addPlayer("buyer"),
+    {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:"buyer", direction:"buy",
+      assetType:"property", price:400, counterpartyName:"Игрок на планшете", asset:{
+        id:"external-home", name:"Дом", kind:"property", price:1000, down:400,
+        mortgage:600, cashflow:150
+      }}
+  ]).players[0];
+
+  assert.equal(p.cash, 1200);
+  assert.deepEqual(Array.from(p.props, asset => [asset.id, asset.name, asset.mortgage, asset.cashflow]),
+    [["external-home", "Дом", 600, 150]]);
+});
+
 test("setup and replay preserve explicit other-asset kind while missing kind defaults to other", () => {
   const harness = loadUI();
   const event = harness.ui.buildAddPlayerEvent("202-standard", {
@@ -589,13 +621,23 @@ test("UI exposes correction tools in both modes and asset tools only in 202", ()
   for(const labels of [labels101, labels202]){
     assert.equal(labels.includes("Прочий расход"), true);
     assert.equal(labels.includes("Счётчики карточек"), true);
-    assert.equal(labels.includes("Налоги / Суд"), true);
     assert.equal(labels.includes("Развод"), true);
+    assert.equal(labels.includes("Увольнение"), false);
+    assert.equal(labels.includes("Налоги / Суд"), false);
+    assert.equal(labels.includes("Моя мечта"), false);
   }
   assert.equal(labels101.includes("Страховка"), false);
   assert.equal(labels202.includes("Страховка"), true);
   assert.equal(labels202.includes("D2Y"), true);
   assert.equal(labels202.includes("Опцион на недвижимость"), true);
+
+  const fastTrack = game([addPlayer("ft"), {type:"ENTER_FT", playerId:"ft"}]).players[0];
+  harness.ui.setState({players:[fastTrack], marketPrices:{}});
+  const fastTrackLabels = harness.ui.actionsFor(fastTrack).map(action => action[1]);
+  assert.equal(fastTrackLabels.includes("Увольнение"), true);
+  assert.equal(fastTrackLabels.includes("Налоги / Суд"), true);
+  assert.equal(fastTrackLabels.includes("Моя мечта"), false);
+  assert.equal(fastTrackLabels.includes("Купить мечту"), true);
 });
 
 test("UI report renders editable owned cards, recurring expense controls and counter states", () => {
