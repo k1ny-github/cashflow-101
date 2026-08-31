@@ -47,3 +47,32 @@ function insuranceExpense(player){
   if(!player.insurance) return Math.max(0, assetNumber(player.insuranceExpense));
   return Math.max(0, assetNumber(player.insurance.expense ?? player.insurance.monthlyExpense ?? player.insurance.amount));
 }
+
+/* Returns [agreed total price, assumed mortgage, cash settlement].  A new
+   player-to-player property sale is only valid when the agreed value is
+   strictly above the mortgage. */
+function propertyTransferSettlement(totalPrice, mortgage){
+  const total = assetNumber(totalPrice);
+  const debt = Math.max(0, assetNumber(mortgage));
+  if(total <= debt) return null;
+  return [total, debt, total - debt];
+}
+
+function bankruptcy202Breakdown(player){
+  const rows = [];
+  const add = (kind, id, name, basis) => {
+    const safeBasis = Math.max(0, assetNumber(basis));
+    rows.push({kind, id, name, basis:safeBasis, proceeds:safeBasis / 2});
+  };
+  (player?.props || []).forEach(asset => add("property", asset.id, asset.name || "Недвижимость", asset.down));
+  (player?.stocks || []).forEach(asset => add("stock", asset.id, asset.symbol || "Акции",
+    assetNumber(asset.qty) * assetNumber(asset.price)));
+  (player?.options || []).forEach(asset => add("option", asset.id,
+    (asset.type === "put" ? "PUT " : "CALL ") + (asset.symbol || "Опцион"),
+    asset.premiumTotal ?? assetNumber(asset.premiumPerShare) * assetNumber(asset.qty)));
+  (player?.realEstateOptions || []).forEach(asset => add("real-estate-option", asset.id,
+    "Опцион на недвижимость", asset.cost));
+  (player?.otherAssets || []).filter(asset => asset.kind !== "royalty")
+    .forEach(asset => add("other", asset.id, asset.name || "Прочий актив", asset.cost));
+  return {rows, total:rows.reduce((sum, row) => sum + row.proceeds, 0)};
+}

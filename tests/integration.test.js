@@ -109,9 +109,9 @@ function loadUI({initialize = false} = {}){
       "setGame(game){G=game;},getGame(){return G;}," +
       "setState(state){S=state;},getState(){return S;}," +
       "prepareImportedGame,reportRatRace,reportFT,renderCardCounters,render202Tools," +
-      "renderTable,renderLog,tableActions,deltaPreview," +
+      "renderTable,renderLog,tableActions,deltaPreview,visibleFormFields," +
       "portfolioRow,actD2Y,actProperty202,actTransfer202,actEditOwnedCard,actBuyProp," +
-      "actFTTransferBusiness,actContinueRealEstateDeal" +
+      "actFTTransferBusiness,actContinueRealEstateDeal,actMarket202" +
     "};",
     context
   );
@@ -455,6 +455,9 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   transferChoice.submit({direction:"sell"});
   const transferForm = transferHarness.captured.forms.at(-1);
   assert.equal(typeof transferForm.preview, "function");
+  const externalBuyerName = transferForm.fields.find(field => field.k === "counterpartyName");
+  assert.equal(externalBuyerName.visibleWhen({buyerId:"buyer"}), false);
+  assert.equal(externalBuyerName.visibleWhen({buyerId:"external"}), true);
   assert.match(transferForm.preview({asset:"royalty:p-initial-other-0", buyerId:"buyer",
     counterpartyName:"", price:100}), /Изменение/);
 
@@ -470,6 +473,25 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
     counterpartyName:"Другой телефон", price:100});
   assert.equal(externalHarness.captured.events[0].type, "TRANSFER_EXTERNAL_202_ASSET");
   assert.equal(externalHarness.captured.events[0].direction, "sell");
+  assert.match(externalHarness.captured.events[0].dealRef, /^CF-[A-Z0-9]+$/);
+
+  const externalPropertyHarness = loadUI();
+  const externalPropertyGame = setIntegratedGame(externalPropertyHarness, core, [
+    addPlayer(),
+    {type:"BUY_PROPERTY", playerId:"p", assetId:"home", name:"Дом", kind:"property",
+      price:65000, down:8000, mortgage:57000, cashflow:300}
+  ]);
+  externalPropertyHarness.ui.actTransfer202(externalPropertyGame.player);
+  externalPropertyHarness.captured.forms.at(-1).submit({direction:"sell"});
+  const externalPropertyForm = externalPropertyHarness.captured.forms.at(-1);
+  assert.match(externalPropertyForm.validate({asset:"property:home", buyerId:"external",
+    counterpartyName:"Другой телефон", price:57000}), /выше ипотеки/);
+  assert.equal(externalPropertyForm.validate({asset:"property:home", buyerId:"external",
+    counterpartyName:"Другой телефон", price:60000}), null);
+  externalPropertyForm.submit({asset:"property:home", buyerId:"external",
+    counterpartyName:"Другой телефон", price:60000});
+  assert.equal(externalPropertyHarness.captured.events[0].totalPrice, 60000);
+  assert.equal(externalPropertyHarness.captured.events[0].price, 3000);
 
   const purchaseHarness = loadUI();
   const purchaseGame = setIntegratedGame(purchaseHarness, core, [addPlayer()]);
@@ -478,13 +500,17 @@ test("complex financial dialogs preview resulting cash and monthly-flow change",
   purchaseHarness.captured.forms.at(-1).submit({assetType:"property"});
   const purchaseForm = purchaseHarness.captured.forms.at(-1);
   assert.deepEqual(Array.from(purchaseForm.fields, field => field.k),
-    ["counterpartyName", "name", "kind", "cardPrice", "mortgage", "cashflow", "acres", "price"]);
+    ["counterpartyName", "dealRef", "name", "kind", "totalPrice", "mortgage", "cashflow", "acres"]);
   assert.equal(purchaseForm.validate({counterpartyName:"Другой телефон", name:"Дом", kind:"property",
-    cardPrice:1000, mortgage:600, cashflow:150, acres:0, price:400}), null);
+    dealRef:"CF-AB12", totalPrice:1000, mortgage:600, cashflow:150, acres:0}), null);
+  assert.match(purchaseForm.validate({counterpartyName:"Другой телефон", name:"Дом", kind:"property",
+    dealRef:"CF-AB12", totalPrice:600, mortgage:600, cashflow:150, acres:0}), /выше ипотеки/);
   purchaseForm.submit({counterpartyName:"Другой телефон", name:"Дом", kind:"property",
-    cardPrice:1000, mortgage:600, cashflow:150, acres:0, price:400});
+    dealRef:"CF-AB12", totalPrice:1000, mortgage:600, cashflow:150, acres:0});
   assert.equal(purchaseHarness.captured.events[0].type, "TRANSFER_EXTERNAL_202_ASSET");
   assert.equal(purchaseHarness.captured.events[0].direction, "buy");
+  assert.equal(purchaseHarness.captured.events[0].totalPrice, 1000);
+  assert.equal(purchaseHarness.captured.events[0].price, 400);
   assert.equal(purchaseHarness.captured.events[0].asset.down, 400);
 
   const editHarness = loadUI();
@@ -611,4 +637,40 @@ test("repeated 202 portfolio rows give every label a unique associated control",
   assert.equal(labels.length, ids.length);
   assert.equal(new Set(ids).size, ids.length);
   assert.deepEqual(labels, ids);
+});
+
+test("market form tells separate-device players to repeat the same table card", () => {
+  const core = loadCore();
+  const harness = loadUI();
+  const current = setIntegratedGame(harness, core, [addPlayer()]).player;
+
+  harness.ui.actMarket202(current);
+
+  assert.match(harness.captured.forms.at(-1).intro, /на каждом устройстве/);
+});
+
+test("negative asset cashflow is visibly identified as a loss", () => {
+  const core = loadCore();
+  const harness = loadUI();
+  const current = setIntegratedGame(harness, core, [
+    addPlayer(),
+    {type:"BUY_PROPERTY", playerId:"p", assetId:"loss", name:"Убыточный дом", kind:"property",
+      price:1000, down:0, mortgage:1000, cashflow:-160}
+  ]).player;
+
+  assert.match(harness.ui.reportRatRace(current), /Убыточный дом · убыток[^]*neg[^]*−?\$160/);
+});
+
+test("conditional form fields expose only values relevant to the selected action", () => {
+  const ui = loadUI().ui;
+  const fields = [
+    {k:"action"},
+    {k:"buyer", visibleWhen:values => values.action === "transfer"},
+    {k:"property", visibleWhen:values => values.action === "buy"}
+  ];
+
+  assert.deepEqual(Array.from(ui.visibleFormFields(fields, {action:"buy"}), field => field.k),
+    ["action", "property"]);
+  assert.deepEqual(Array.from(ui.visibleFormFields(fields, {action:"transfer"}), field => field.k),
+    ["action", "buyer"]);
 });

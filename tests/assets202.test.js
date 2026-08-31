@@ -26,6 +26,8 @@ function loadEngine(){
       "d2yIncome:typeof d2yIncome === 'function' ? d2yIncome : null," +
       "splitLand:typeof splitLand === 'function' ? splitLand : null," +
       "insuranceExpense:typeof insuranceExpense === 'function' ? insuranceExpense : null," +
+      "propertyTransferSettlement:typeof propertyTransferSettlement === 'function' ? propertyTransferSettlement : null," +
+      "bankruptcy202Breakdown:typeof bankruptcy202Breakdown === 'function' ? bankruptcy202Breakdown : null," +
       "createGameConfig" +
     "};",
     context
@@ -60,7 +62,9 @@ function loadUI(){
       "renderCardCounters:typeof renderCardCounters === 'function' ? renderCardCounters : null," +
       "actInsurance:typeof actInsurance === 'function' ? actInsurance : null," +
       "actEditOwnedCard:typeof actEditOwnedCard === 'function' ? actEditOwnedCard : null," +
-      "actDownsized:typeof actDownsized === 'function' ? actDownsized : null" +
+      "actDownsized:typeof actDownsized === 'function' ? actDownsized : null," +
+      "actRealEstateOption:typeof actRealEstateOption === 'function' ? actRealEstateOption : null," +
+      "actBankruptcy:typeof actBankruptcy === 'function' ? actBankruptcy : null" +
     "};",
     context
   );
@@ -466,6 +470,146 @@ test("transfers allow property and royalties but reject market positions and D2Y
   assert.equal(buyer.otherAssets[0].id, "royalty");
 });
 
+test("new 202 bankruptcy calculates every permitted liquidation value instead of trusting manual proceeds", () => {
+  const beforeEvents = [
+    addPlayer("p", {cash:0, stocks:[], properties:[], otherLiabilities:[], otherAssets:[
+      {id:"generic", name:"Прочий актив", kind:"other", cost:600, income:0},
+      {id:"royalty", name:"Роялти", kind:"royalty", cost:1000, income:0}
+    ]}),
+    {type:"BUY_PROPERTY", playerId:"p", ...property()},
+    {type:"BUY_STOCK", playerId:"p", assetId:"stock", symbol:"OK4U", qty:100, price:10, div:0},
+    {type:"BUY_OPTION", playerId:"p", optionId:"option", optionType:"call", symbol:"OK4U",
+      qty:100, strike:20, premiumPerShare:1},
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"p", optionId:"property-option", cost:200},
+    {type:"TAKE_LOAN", playerId:"p", amount:700}
+  ];
+  const engine = loadEngine();
+  const before = game(beforeEvents).players[0];
+  const breakdown = engine.bankruptcy202Breakdown(before);
+  const after = game(beforeEvents.concat({
+    type:"DECLARE_202_BANKRUPTCY", playerId:"p", reason:"personal", calculationVersion:2,
+    proceeds:999999, counterId:"skip-turns"
+  })).players[0];
+
+  assert.equal(breakdown.total, 1000);
+  assert.deepEqual(Array.from(breakdown.rows, row => [row.kind, row.proceeds]), [
+    ["property", 50], ["stock", 500], ["option", 50],
+    ["real-estate-option", 100], ["other", 300]
+  ]);
+  assert.equal(after.cash, 1200);
+  assert.equal(after.bankLoan, 0);
+  assert.equal(after.otherAssets[0].id, "royalty");
+});
+
+test("202 bankruptcy UI presents an automatic asset-by-asset calculation", () => {
+  const harness = loadUI();
+  const state = game([
+    addPlayer("p"),
+    {type:"BUY_PROPERTY", playerId:"p", ...property()},
+    {type:"BUY_STOCK", playerId:"p", assetId:"stock", symbol:"OK4U", qty:100, price:1, div:0}
+  ]);
+  harness.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  harness.ui.setState(state);
+
+  harness.ui.actBankruptcy(state.players[0], "202");
+  const form = harness.captured.forms.at(-1);
+  assert.equal(form.fields.length, 0);
+  assert.match(form.intro, /Дом[^]*\$50[^]*OK4U[^]*\$50/);
+  form.submit({});
+  assert.equal(harness.captured.events[0].calculationVersion, 2);
+});
+
+test("an option holder can resolve a property card drawn on another device", () => {
+  const events = [
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", cost:0},
+    {type:"RESOLVE_EXTERNAL_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option",
+      action:"buy", dealRef:"RE-1234", sourcePlayerName:"Другой телефон",
+      property:property({assetId:"external-house", down:200, cashflow:150})}
+  ];
+  const resolved = game(events).players[0];
+  const restored = game(events.slice(0, -1)).players[0];
+
+  assert.equal(resolved.realEstateOptions.length, 0);
+  assert.equal(resolved.props[0].id, "external-house");
+  assert.equal(resolved.cash, 1400);
+  assert.equal(restored.realEstateOptions[0].id, "option");
+  assert.equal(restored.props.length, 0);
+});
+
+test("an externally transferred or refused real-estate option is consumed reversibly", () => {
+  const transferred = game([
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", cost:0},
+    {type:"RESOLVE_EXTERNAL_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option",
+      action:"transfer", salePrice:300, counterpartyName:"Игрок на планшете"}
+  ]).players[0];
+  const refused = game([
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", cost:0},
+    {type:"RESOLVE_EXTERNAL_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", action:"refuse"}
+  ]).players[0];
+
+  assert.equal(transferred.cash, 1900);
+  assert.equal(transferred.realEstateOptions.length, 0);
+  assert.equal(refused.realEstateOptions.length, 0);
+});
+
+test("an external property card can resolve only the oldest known real-estate option", () => {
+  const events = [
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"first", cost:0},
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"second", cost:0}
+  ];
+  const skipped = game(events.concat({
+    type:"RESOLVE_EXTERNAL_REAL_ESTATE_OPTION", playerId:"holder", optionId:"second", action:"refuse"
+  })).players[0];
+  const resolved = game(events.concat({
+    type:"RESOLVE_EXTERNAL_REAL_ESTATE_OPTION", playerId:"holder", optionId:"first", action:"refuse"
+  })).players[0];
+
+  assert.deepEqual(Array.from(skipped.realEstateOptions, option => option.id), ["first", "second"]);
+  assert.deepEqual(Array.from(resolved.realEstateOptions, option => option.id), ["second"]);
+});
+
+test("real-estate option UI accepts a card from another device instead of showing an alert", () => {
+  const harness = loadUI();
+  const state = game([
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"option", cost:0}
+  ]);
+  harness.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  harness.ui.setState(state);
+
+  harness.ui.actRealEstateOption(state.players[0]);
+  const form = harness.captured.forms.at(-1);
+  assert.equal(harness.captured.alerts.length, 0);
+  assert.match(form.intro, /другом устройстве/);
+  assert.equal(form.validate({optionId:"option", action:"buy", sourcePlayerName:"Другой телефон",
+    counterpartyName:"", salePrice:0, name:"Дом", kind:"property", price:1000,
+    down:200, mortgage:800, cashflow:150, acres:0, removeCashflow:"keep"}), null);
+  form.submit({optionId:"option", action:"buy", sourcePlayerName:"Другой телефон",
+    counterpartyName:"", salePrice:0, name:"Дом", kind:"property", price:1000,
+    down:200, mortgage:800, cashflow:150, acres:0, removeCashflow:"keep"});
+  assert.equal(harness.captured.events[0].type, "RESOLVE_EXTERNAL_REAL_ESTATE_OPTION");
+  assert.equal(harness.captured.events[0].property.name, "Дом");
+});
+
+test("external property-card UI offers only the oldest known option", () => {
+  const harness = loadUI();
+  const state = game([
+    addPlayer("holder"),
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"first", cost:0},
+    {type:"BUY_REAL_ESTATE_OPTION", playerId:"holder", optionId:"second", cost:0}
+  ]);
+  harness.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  harness.ui.setState(state);
+
+  harness.ui.actRealEstateOption(state.players[0]);
+  const optionField = harness.captured.forms.at(-1).fields.find(field => field.k === "optionId");
+  assert.deepEqual(Array.from(optionField.options, option => option.v), ["first"]);
+});
+
 test("an external sale works with one local player and undo restores the asset", () => {
   const events = [
     addPlayer("seller", {cash:0, stocks:[], properties:[], otherLiabilities:[], otherAssets:[
@@ -496,6 +640,71 @@ test("an external purchase records a property without a second local player", ()
   assert.equal(p.cash, 1200);
   assert.deepEqual(Array.from(p.props, asset => [asset.id, asset.name, asset.mortgage, asset.cashflow]),
     [["external-home", "Дом", 600, 150]]);
+});
+
+test("a new property transfer treats the agreed price as total value and mortgage as assumed debt", () => {
+  const engine = loadEngine();
+  assert.deepEqual(Array.from(engine.propertyTransferSettlement(60000, 57000)), [60000, 57000, 3000]);
+
+  const seller = game([
+    addPlayer("seller"),
+    {type:"BUY_PROPERTY", playerId:"seller", ...property({
+      assetId:"house", price:65000, down:8000, mortgage:57000, cashflow:300
+    })},
+    {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:"seller", direction:"sell",
+      assetType:"property", assetId:"house", totalPrice:60000, mortgage:57000,
+      price:3000, dealRef:"CF-1234", counterpartyName:"Покупатель"}
+  ]).players[0];
+
+  assert.equal(seller.cash, -3400);
+  assert.equal(seller.props.length, 0);
+});
+
+test("a local property buyer records the new agreed value and paid equity", () => {
+  const state = game([
+    addPlayer("seller"),
+    addPlayer("buyer"),
+    {type:"TAKE_LOAN", playerId:"seller", amount:8000, purpose:"deal"},
+    {type:"BUY_PROPERTY", playerId:"seller", ...property({
+      assetId:"house", price:65000, down:8000, mortgage:57000, cashflow:300
+    })},
+    {type:"TAKE_LOAN", playerId:"buyer", amount:3000, purpose:"deal"},
+    {type:"TRANSFER_202_ASSET", playerId:"seller", toPlayerId:"buyer",
+      assetType:"property", assetId:"house", totalPrice:60000, price:3000}
+  ]);
+  const buyer = state.players.find(player => player.id === "buyer");
+
+  assert.deepEqual(Array.from(buyer.props, asset => [asset.price, asset.down, asset.mortgage]),
+    [[60000, 3000, 57000]]);
+});
+
+test("an external property buyer pays only equity and records the agreed value", () => {
+  const buyer = game([
+    addPlayer("buyer"),
+    {type:"TAKE_LOAN", playerId:"buyer", amount:3000, purpose:"deal"},
+    {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:"buyer", direction:"buy",
+      assetType:"property", totalPrice:60000, mortgage:57000, price:3000,
+      dealRef:"CF-1234", counterpartyName:"Продавец", asset:{
+        id:"house", name:"Дом", kind:"property", price:60000, down:3000,
+        mortgage:57000, cashflow:300
+      }}
+  ]).players[0];
+
+  assert.equal(buyer.cash, 1600);
+  assert.deepEqual(Array.from(buyer.props, asset => [asset.price, asset.down, asset.mortgage]),
+    [[60000, 3000, 57000]]);
+});
+
+test("a new property transfer is rejected when total price does not exceed the mortgage", () => {
+  const seller = game([
+    addPlayer("seller"),
+    {type:"BUY_PROPERTY", playerId:"seller", ...property({assetId:"house", mortgage:900})},
+    {type:"TRANSFER_EXTERNAL_202_ASSET", playerId:"seller", direction:"sell",
+      assetType:"property", assetId:"house", totalPrice:900, mortgage:900, price:0,
+      counterpartyName:"Покупатель"}
+  ]).players[0];
+
+  assert.equal(seller.props.length, 1);
 });
 
 test("setup and replay preserve explicit other-asset kind while missing kind defaults to other", () => {
@@ -638,6 +847,36 @@ test("UI exposes correction tools in both modes and asset tools only in 202", ()
   assert.equal(fastTrackLabels.includes("Налоги / Суд"), true);
   assert.equal(fastTrackLabels.includes("Моя мечта"), false);
   assert.equal(fastTrackLabels.includes("Купить мечту"), true);
+});
+
+test("starting-portfolio property rows preserve land and business card details", () => {
+  const harness = loadUI();
+  const html = harness.ui.portfolioRow("properties", {
+    name:"Участок", kind:"land", price:10000, down:1000, mortgage:9000,
+    cashflow:-100, acres:20, removeCashflowOnSplit:true
+  }, 0);
+  const event = harness.ui.buildAddPlayerEvent("202-standard", {
+    playerId:"p", name:"p", professionId:"nurse", dream:{name:"Мечта", price:100000},
+    portfolio:{cash:0, stocks:[], otherAssets:[], otherLiabilities:[], properties:[{
+      name:"Участок", kind:"land", price:10000, down:1000, mortgage:9000,
+      cashflow:-100, acres:20, removeCashflowOnSplit:true
+    }]}
+  });
+  const replayed = game([event]).players[0].props[0];
+
+  assert.match(html, /Тип объекта[^]*Земля[^]*Площадь/);
+  assert.equal(event.initialPortfolio.properties[0].kind, "land");
+  assert.equal(event.initialPortfolio.properties[0].acres, 20);
+  assert.equal(event.initialPortfolio.properties[0].removeCashflowOnSplit, true);
+  assert.deepEqual([replayed.kind, replayed.acres, replayed.cashflow], ["land", 20, -100]);
+});
+
+test("starting-portfolio land-only fields are hidden for ordinary property cards", () => {
+  const html = loadUI().ui.portfolioRow("properties", {
+    name:"Дом", kind:"property", price:65000, down:8000, mortgage:57000, cashflow:300
+  }, 0);
+
+  assert.match(html, /data-portfolio-land-only hidden/);
 });
 
 test("UI report renders editable owned cards, recurring expense controls and counter states", () => {

@@ -48,6 +48,7 @@ function loadUI(){
       "actFTBiz,actFTDream,actFTCharity,actEditOwnedCard," +
       "actFTTransferBusiness:typeof actFTTransferBusiness === 'function' ? actFTTransferBusiness : null," +
       "actFTFranchise:typeof actFTFranchise === 'function' ? actFTFranchise : null," +
+      "actDreamToken:typeof actDreamToken === 'function' ? actDreamToken : null," +
       "reportFT,renderCardCounters,render202Tools" +
     "};",
     context
@@ -176,6 +177,56 @@ test("a recorded landing transfers another player's business at the post-transfe
   assert.equal(after.players[0].cash, before.players[0].cash + 200000);
   assert.equal(after.players[1].cash, before.players[1].cash - 200000);
   assert.equal(game(purchase).players[0].ft.businesses.length, 1);
+});
+
+test("separate devices can record both sides of one mandatory business transfer", () => {
+  const sellerEvents = [
+    addPlayer("owner"), ...enterWithCash("owner"),
+    {type:"FT_BUY_BIZ", playerId:"owner", assetId:"biz", name:"Сеть", price:100000,
+      down:0, mortgage:0, cashflow:20000},
+    {type:"FT_TRANSFER_EXTERNAL_BUSINESS", playerId:"owner", direction:"sell",
+      businessId:"biz", counterpartyName:"buyer", dealRef:"CF-BIZ1"}
+  ];
+  const buyerEvents = [
+    addPlayer("buyer"), ...enterWithCash("buyer"),
+    {type:"FT_TRANSFER_EXTERNAL_BUSINESS", playerId:"buyer", direction:"buy",
+      counterpartyName:"owner", dealRef:"CF-BIZ1", business:{
+        id:"biz-copy", name:"Сеть", basePrice:100000, baseCashflow:20000,
+        ownershipTokens:1, franchiseCount:0
+      }}
+  ];
+  const seller = game(sellerEvents).players[0];
+  const buyer = game(buyerEvents).players[0];
+  const restoredSeller = game(sellerEvents.slice(0, -1)).players[0];
+
+  assert.equal(seller.cash, 1100000);
+  assert.equal(seller.ft.businesses.length, 0);
+  assert.equal(buyer.cash, 800000);
+  assert.deepEqual(Array.from(buyer.ft.businesses, business => [
+    business.name, business.ownershipTokens, business.cashflow
+  ]), [["Сеть", 2, 20000]]);
+  assert.equal(restoredSeller.ft.businesses[0].id, "biz");
+});
+
+test("a Dream owner can receive a token placed by a player on another device", () => {
+  const events = [
+    addPlayer("owner", "Остров"), ...enterWithCash("owner"),
+    {type:"RECEIVE_EXTERNAL_DREAM_TOKEN", playerId:"owner", byPlayerName:"buyer", dealRef:"CF-DREAM1"}
+  ];
+  const owner = game(events).players[0];
+  const restored = game(events.slice(0, -1)).players[0];
+
+  assert.equal(owner.dream.tokens, 1);
+  assert.equal(restored.dream.tokens, 0);
+});
+
+test("a Dream owner can receive an external token before entering the Fast Track", () => {
+  const events = [
+    addPlayer("owner", "Остров"),
+    {type:"RECEIVE_EXTERNAL_DREAM_TOKEN", playerId:"owner", byPlayerName:"buyer", dealRef:"CF-DREAM2"}
+  ];
+
+  assert.equal(game(events).players[0].dream.tokens, 1);
 });
 
 test("an owner adds at most one franchise for the same recorded landing", () => {
@@ -442,6 +493,8 @@ test("202 business purchase form requires full-price cash", () => {
   ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
   ui.ui.actFTBiz(p);
 
+  assert.deepEqual(Array.from(ui.captured.forms[0].fields, field => field.k), ["name", "price", "cashflow"]);
+
   const error202 = ui.submit({name:"Сеть", price:100, down:10, mortgage:90, cashflow:20});
 
   assert.match(error202, /не хватает/i);
@@ -458,9 +511,46 @@ test("202 Dream form starts with own or other choice and emits the new unselecte
   const firstField = ui.captured.forms[0].fields[0];
   assert.equal(firstField.k, "kind");
   assert.deepEqual(Array.from(firstField.options, option => option.v), ["own", "other"]);
-  assert.equal(ui.submit({kind:"other", fieldId:"free-a", name:"Мечта A", price:10000}), null);
+  assert.deepEqual(Array.from(ui.captured.forms[0].fields, field => field.k), ["kind"]);
+  assert.equal(ui.submit({kind:"other"}), null);
+  assert.deepEqual(Array.from(ui.captured.forms[1].fields, field => field.k), ["fieldId", "name", "price"]);
+  assert.match(ui.captured.forms[1].intro, /физической доске/);
+  assert.equal(ui.submit({fieldId:"free-a", name:"Мечта A", price:10000}), null);
   assert.equal(ui.captured.events[0].type, "FT_BUY_OTHER_DREAM");
   assert.equal(ui.captured.events[0].fieldId, "free-a");
+});
+
+test("own Dream purchase opens a focused confirmation without other-Dream fields", () => {
+  const p = game([addPlayer("p"), ...enterWithCash("p")]).players[0];
+  const ui = loadUI();
+  ui.ui.setState({players:[p], marketPrices:{}});
+  ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+
+  ui.ui.actFTDream(p);
+  ui.captured.forms[0].submit({kind:"own"});
+
+  assert.equal(ui.captured.forms[1].fields.length, 0);
+  assert.match(ui.captured.forms[1].intro, /p dream/);
+});
+
+test("Fast Track hides franchise when the player owns no business and uses clear table-action labels", () => {
+  const buyer = game([addPlayer("buyer"), ...enterWithCash("buyer")]).players[0];
+  const owner = game([
+    addPlayer("owner"), ...enterWithCash("owner"),
+    {type:"FT_BUY_BIZ", playerId:"owner", assetId:"biz", name:"Сеть", price:100000,
+      down:100000, mortgage:0, cashflow:20000}
+  ]).players[0];
+  const ui = loadUI();
+  ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+  ui.ui.setState({players:[buyer], marketPrices:{}});
+  const buyerLabels = ui.ui.actionsFor(buyer).map(action => action[1]);
+  ui.ui.setState({players:[owner], marketPrices:{}});
+  const ownerLabels = ui.ui.actionsFor(owner).map(action => action[1]);
+
+  assert.equal(buyerLabels.includes("Передача бизнеса"), true);
+  assert.equal(buyerLabels.includes("Добавить франшизу"), false);
+  assert.equal(buyerLabels.includes("Жетоны Мечт"), true);
+  assert.equal(ownerLabels.includes("Добавить франшизу"), true);
 });
 
 test("202 UI emits mandatory business transfer and one franchise event per form landing", () => {
@@ -484,6 +574,49 @@ test("202 UI emits mandatory business transfer and one franchise event per form 
   assert.equal(ui.submit({business:franchiseChoice}), null);
   assert.equal(ui.captured.events[1].type, "FT_ADD_FRANCHISE");
   assert.ok(ui.captured.events[1].landingId);
+});
+
+test("Fast Track business transfer offers a separate-device flow instead of an alert", () => {
+  const buyer = game([addPlayer("buyer"), ...enterWithCash("buyer")]).players[0];
+  const ui = loadUI();
+  ui.ui.setState({players:[buyer], marketPrices:{}});
+  ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+
+  ui.ui.actFTTransferBusiness(buyer);
+  assert.equal(ui.captured.alerts.length, 0);
+  assert.deepEqual(Array.from(ui.captured.forms[0].fields[0].options, option => option.v), ["buy"]);
+  ui.captured.forms[0].submit({direction:"buy"});
+  assert.equal(ui.submit({counterpartyName:"owner", dealRef:"CF-BIZ1", name:"Сеть",
+    basePrice:100000, baseCashflow:20000, ownershipTokens:1, franchiseCount:0}), null);
+  assert.equal(ui.captured.events[0].type, "FT_TRANSFER_EXTERNAL_BUSINESS");
+  assert.equal(ui.captured.events[0].direction, "buy");
+});
+
+test("Dream-token action records a token received from another device", () => {
+  const owner = game([addPlayer("owner", "Остров"), ...enterWithCash("owner")]).players[0];
+  const ui = loadUI();
+  ui.ui.setState({players:[owner], marketPrices:{}});
+  ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+
+  ui.ui.actDreamToken(owner);
+  assert.equal(ui.captured.alerts.length, 0);
+  assert.equal(ui.submit({target:"external", byPlayerName:"buyer"}), null);
+  assert.equal(ui.captured.events[0].type, "RECEIVE_EXTERNAL_DREAM_TOKEN");
+  assert.equal(ui.captured.events[0].byPlayerName, "buyer");
+});
+
+test("202 Rat Race exposes only the incoming external Dream-token action", () => {
+  const owner = game([addPlayer("owner", "Остров")]).players[0];
+  const ui = loadUI();
+  ui.ui.setState({players:[owner], marketPrices:{}});
+  ui.ui.setGame({mode:"202-standard", settings:{optionRounds:3, strictLots:true}, events:[]});
+
+  const action = ui.ui.actionsFor(owner).find(item => item[1] === "Получен жетон Мечты");
+  assert.ok(action);
+  action[2]();
+  const form = ui.captured.forms.at(-1);
+  assert.deepEqual(Array.from(form.fields[0].options, option => option.v), ["external"]);
+  assert.equal(form.fields[1].visibleWhen({target:"external"}), true);
 });
 
 test("202 business edit form shows base values instead of franchise aggregate income", () => {

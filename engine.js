@@ -394,6 +394,17 @@ const EVENT_DIAGNOSTICS = Object.freeze({
     return eventId(ev, ["optionId", "assetId"]) && ["buy", "refuse", "decline", "transfer", "sell"].includes(action) &&
       (!["transfer", "sell"].includes(action) || (eventId(ev, ["buyerId", "toPlayerId"]) && eventNonNegative(ev.salePrice)));
   }, references:ev => ["transfer", "sell"].includes(ev.action || ev.decision) ? [ev.buyerId || ev.toPlayerId] : []},
+  RESOLVE_EXTERNAL_REAL_ESTATE_OPTION:{player:true, valid:ev => {
+    const action = ev.action || ev.decision;
+    if(!eventId(ev, ["optionId", "assetId"]) || !["buy", "transfer", "refuse"].includes(action)) return false;
+    if(action === "buy"){
+      const property = ev.property || ev.asset;
+      return eventObject(property) && eventId(property, ["assetId", "id"]) && eventText(property.name) &&
+        eventNonNegative(property.price) && eventNonNegative(property.down) && eventNumber(property.cashflow) &&
+        eventOptionalNumber(property, "mortgage");
+    }
+    return action !== "transfer" || (eventNonNegative(ev.salePrice) && eventText(ev.counterpartyName));
+  }},
   CONTINUE_REAL_ESTATE_DEAL:{player:true},
   TRANSFER_202_ASSET:{player:true, valid:ev => eventId(ev, ["toPlayerId", "buyerId"]) && eventId(ev, ["assetId"]) &&
     ["property", "realEstate", "royalty", "realEstateOption", "real-estate-option"].includes(ev.assetType || ev.cardType) &&
@@ -425,12 +436,21 @@ const EVENT_DIAGNOSTICS = Object.freeze({
       (ev.mortgage !== undefined && Number(ev.mortgage) < 0)},
   FT_TRANSFER_BUSINESS:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]),
     references:ev => eventText(ev.fromPlayerId) ? [ev.fromPlayerId] : []},
+  FT_TRANSFER_EXTERNAL_BUSINESS:{player:true, valid:ev => {
+    if(!["buy", "sell"].includes(ev.direction) || !eventText(ev.counterpartyName)) return false;
+    if(ev.direction === "sell") return eventId(ev, ["businessId", "assetId"]);
+    const business = ev.business;
+    return eventObject(business) && eventId(business, ["id", "assetId"]) && eventText(business.name) &&
+      eventPositive(business.basePrice) && eventNonNegative(business.baseCashflow) &&
+      eventPositive(business.ownershipTokens);
+  }},
   FT_ADD_FRANCHISE:{player:true, valid:ev => eventId(ev, ["businessId", "assetId"]) && eventText(ev.landingId)},
   FT_CHARITY:{player:true, valid:ev => eventOptionalNumber(ev, "amount") && eventOptionalNumber(ev, "dice")},
   FT_CHOOSE_DICE:{player:true, valid:ev => eventNumber(ev.dice)},
   SET_DREAM:{player:true, valid:ev => eventText(ev.name) && eventNumber(ev.price),
     compatibilityWarning:ev => Number(ev.price) < 0},
   DREAM_TOKEN:{player:true},
+  RECEIVE_EXTERNAL_DREAM_TOKEN:{player:true, valid:ev => eventText(ev.byPlayerName)},
   FT_DREAM:{player:true, valid:ev => eventOptionalNumber(ev, "price")},
   FT_OTHER_DREAM:{player:true, valid:ev => eventText(ev.ownerId), references:ev => [ev.ownerId]},
   FT_BUY_OTHER_DREAM:{player:true, valid:ev => eventAny(ev, ["fieldId", "dreamId", "assetId", "name"]) && eventOptionalNumber(ev, "price")},
@@ -683,7 +703,9 @@ function apply(state, ev, config){
         return;
       }
       if(!allows202Event(config)) return;
-      const proceeds = Math.max(0, finiteNumber(ev.proceeds ?? ev.bankProceeds));
+      const proceeds = ev.calculationVersion >= 2 && typeof bankruptcy202Breakdown === "function"
+        ? bankruptcy202Breakdown(p).total
+        : Math.max(0, finiteNumber(ev.proceeds ?? ev.bankProceeds));
       const paidToBank = Math.min(proceeds, p.bankLoan);
       const remainder = proceeds - paidToBank;
       p.bankLoan = 0; // uncovered bank credit is written off by the official procedure
@@ -863,7 +885,8 @@ function apply(state, ev, config){
       if(p.cash < Math.max(0, finiteNumber(ev.cost ?? ev.price))) return;
       p.cash -= Math.max(0, finiteNumber(ev.cost ?? ev.price));
       state.realEstateOptionSequence = (state.realEstateOptionSequence || 0) + 1;
-      p.realEstateOptions.push({id:ev.optionId || ev.assetId, order:state.realEstateOptionSequence});
+      p.realEstateOptions.push({id:ev.optionId || ev.assetId, order:state.realEstateOptionSequence,
+        cost:Math.max(0, finiteNumber(ev.cost ?? ev.price))});
       return;
 
     case "OFFER_REAL_ESTATE": {
@@ -922,23 +945,32 @@ function apply(state, ev, config){
       if(!allows202Event(config)) return;
       const buyer = state.players.find(player => player.id === (ev.toPlayerId || ev.buyerId) && player.id !== p.id);
       if(!buyer) return;
-      const price = Math.max(0, finiteNumber(ev.price));
-      if(buyer.cash < price) return;
+      let price = Math.max(0, finiteNumber(ev.price));
       let asset = null;
       const assetType = ev.assetType || ev.cardType;
       if(assetType === "property" || assetType === "realEstate"){
         asset = p.props.find(item => item.id === ev.assetId);
+        let transferredTerms = null;
+        if(asset && ev.totalPrice !== undefined){
+          const settlement = propertyTransferSettlement(ev.totalPrice, asset.mortgage);
+          if(!settlement) return;
+          price = settlement[2];
+          transferredTerms = {price:settlement[0], down:settlement[2], mortgage:settlement[1]};
+        }
+        if(buyer.cash < price) return;
         if(asset && !ev.joint) p.props = p.props.filter(item => item.id !== asset.id);
         if(asset){
           const jointId = ev.joint ? (asset.jointId || asset.id) : asset.jointId;
           if(ev.joint) asset.jointId = jointId;
-          buyer.props.push({...asset, ...(jointId ? {jointId} : {})});
+          buyer.props.push({...asset, ...(transferredTerms || {}), ...(jointId ? {jointId} : {})});
         }
       } else if(assetType === "royalty"){
+        if(buyer.cash < price) return;
         asset = p.otherAssets.find(item => item.id === ev.assetId && item.kind === "royalty");
         if(asset) p.otherAssets = p.otherAssets.filter(item => item.id !== asset.id);
         if(asset) buyer.otherAssets.push({...asset});
       } else if(assetType === "realEstateOption" || assetType === "real-estate-option"){
+        if(buyer.cash < price) return;
         const oldest = oldestRealEstateOption(state);
         asset = p.realEstateOptions.find(item => item.id === ev.assetId);
         if(state.pendingRealEstateDeal && asset && oldest?.option.id === asset.id){
@@ -952,15 +984,43 @@ function apply(state, ev, config){
       return;
     }
 
+    case "RESOLVE_EXTERNAL_REAL_ESTATE_OPTION": {
+      if(!allows202Event(config) || state.pendingRealEstateDeal) return;
+      const optionId = ev.optionId || ev.assetId;
+      const option = p.realEstateOptions.find(item => item.id === optionId);
+      const oldest = oldestRealEstateOption(state);
+      if(!option || !oldest || oldest.owner.id !== p.id || oldest.option.id !== optionId) return;
+      const action = ev.action || ev.decision;
+      if(action === "refuse"){
+        p.realEstateOptions = p.realEstateOptions.filter(item => item.id !== optionId);
+        return;
+      }
+      if(action === "transfer"){
+        p.cash += Math.max(0, finiteNumber(ev.salePrice));
+        p.realEstateOptions = p.realEstateOptions.filter(item => item.id !== optionId);
+        return;
+      }
+      if(action !== "buy") return;
+      const asset = propertyFromEvent(ev.property || ev.asset, ev.property?.assetId || ev.property?.id);
+      if(!asset || p.cash < asset.down || !addProperty(p, asset)) return;
+      p.realEstateOptions = p.realEstateOptions.filter(item => item.id !== optionId);
+      return;
+    }
+
     case "TRANSFER_EXTERNAL_202_ASSET": {
       if(!allows202Event(config)) return;
       const direction = ev.direction;
       const assetType = ev.assetType || ev.cardType;
-      const price = Math.max(0, finiteNumber(ev.price));
+      let price = Math.max(0, finiteNumber(ev.price));
       if(direction === "sell"){
         let asset = null;
         if(assetType === "property"){
           asset = p.props.find(item => item.id === ev.assetId);
+          if(asset && ev.totalPrice !== undefined){
+            const settlement = propertyTransferSettlement(ev.totalPrice, asset.mortgage);
+            if(!settlement) return;
+            price = settlement[2];
+          }
           if(asset) p.props = p.props.filter(item => item.id !== asset.id);
         } else if(assetType === "royalty"){
           asset = p.otherAssets.find(item => item.id === ev.assetId && item.kind === "royalty");
@@ -969,12 +1029,19 @@ function apply(state, ev, config){
         if(asset) p.cash += price;
         return;
       }
-      if(direction !== "buy" || p.cash < price || !ev.asset) return;
+      if(direction !== "buy" || !ev.asset) return;
       if(assetType === "property"){
+        if(ev.totalPrice !== undefined){
+          const settlement = propertyTransferSettlement(ev.totalPrice, ev.asset.mortgage);
+          if(!settlement) return;
+          price = settlement[2];
+        }
+        if(p.cash < price) return;
         const asset = propertyFromEvent(ev.asset, ev.asset.id || ev.asset.assetId);
         if(!asset?.id || p.props.some(item => item.id === asset.id)) return;
         p.props.push(asset);
       } else if(assetType === "royalty"){
+        if(p.cash < price) return;
         const id = ev.asset.id || ev.asset.assetId;
         if(!id || p.otherAssets.some(item => item.id === id)) return;
         p.otherAssets.push({
@@ -1107,6 +1174,39 @@ function apply(state, ev, config){
       return;
     }
 
+    case "FT_TRANSFER_EXTERNAL_BUSINESS": {
+      if(!p.ft || !(is202Config(config) || is202Player(p))) return;
+      if(ev.direction === "sell"){
+        const businessId = ev.businessId || ev.assetId;
+        const index = p.ft.businesses.findIndex(business => business.id === businessId);
+        if(index < 0) return;
+        const business = p.ft.businesses[index];
+        const nextTokens = Math.max(1, finiteNumber(business.ownershipTokens || business.tokens || 1)) + 1;
+        const price = finiteNumber(business.basePrice ?? business.price ?? business.down) * nextTokens;
+        p.ft.businesses.splice(index, 1);
+        p.cash += price;
+        return;
+      }
+      if(ev.direction !== "buy" || !ev.business) return;
+      const source = ev.business;
+      const basePrice = Math.max(0, finiteNumber(source.basePrice ?? source.price));
+      const baseCashflow = Math.max(0, finiteNumber(source.baseCashflow ?? source.cashflow));
+      const oldTokens = Math.max(1, Math.round(finiteNumber(source.ownershipTokens || source.tokens || 1)));
+      const ownershipTokens = oldTokens + 1;
+      const franchiseCount = Math.max(0, Math.round(finiteNumber(source.franchiseCount)));
+      const price = basePrice * ownershipTokens;
+      const id = source.id || source.assetId;
+      if(!id || p.cash < price || p.ft.businesses.some(business => business.id === id)) return;
+      p.cash -= price;
+      p.ft.businesses.push({
+        id, name:String(source.name || "Бизнес"), price:basePrice, down:basePrice, mortgage:0,
+        basePrice, baseCashflow, ownershipTokens,
+        franchises:Array.from({length:franchiseCount}, (_, index) => ({landingId:"external-" + index})),
+        cashflow:baseCashflow * (1 + franchiseCount)
+      });
+      return;
+    }
+
     case "FT_ADD_FRANCHISE": {
       if(!p.ft || !(is202Config(config) || is202Player(p))) return;
       const business = p.ft.businesses.find(item => item.id === (ev.businessId || ev.assetId));
@@ -1156,6 +1256,11 @@ function apply(state, ev, config){
        но цена Мечты для владельца растёт (стр. 12). */
     case "DREAM_TOKEN":
       if(!p.dream) return;
+      p.dream.tokens += 1;
+      return;
+
+    case "RECEIVE_EXTERNAL_DREAM_TOKEN":
+      if(!p.dream || p.dream.bought || !(is202Config(config) || is202Player(p))) return;
       p.dream.tokens += 1;
       return;
 
